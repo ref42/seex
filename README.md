@@ -1,5 +1,9 @@
 # SeEx
 
+<div align="center">
+<img src="assets/seex.png" alt="seex">
+</div>
+
 Seek & Export.
 
 `SeEx` is distributed here as binary releases for clipboard-based LCSC ID tracking,
