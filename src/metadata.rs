@@ -523,6 +523,7 @@ mod tests {
             manufacturer: "CN Manufacturer".to_string(),
             datasheet: "https://source.test/ds".to_string(),
             jlc_id: String::new(),
+            package: String::new(),
         }
     }
 }

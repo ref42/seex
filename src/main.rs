@@ -8,6 +8,7 @@
 mod altium;
 mod batch;
 mod bom;
+mod cadence;
 mod cli;
 mod config;
 mod easyeda;
@@ -20,6 +21,7 @@ mod lcsc;
 mod metadata;
 mod monitor;
 mod progress;
+mod step_logo;
 mod step_model;
 mod ui;
 mod util;

@@ -17,6 +17,7 @@ use crate::error::{AppError, Result};
 use crate::lceda::{LcedaClient, SearchItem};
 use crate::lcsc::{LcscClient, LcscProduct};
 use crate::metadata::ResolvedMetadata;
+use crate::step_model::ModelCleanup;
 use crate::util::{nested_string, sanitize_filename, split_obj_and_mtl};
 
 #[derive(Debug, Serialize)]
@@ -38,6 +39,7 @@ pub async fn download_step(
     item: &SearchItem,
     out_dir: &Path,
     force: bool,
+    models: &ModelCleanup,
 ) -> Result<PathBuf> {
     fs::create_dir_all(out_dir)?;
     let out_file = out_dir.join(item.choose_step_filename());
@@ -47,6 +49,10 @@ pub async fn download_step(
 
     let model_uuid = client.get_model_uuid(item).await?;
     let content = client.download_step_bytes(&model_uuid).await?;
+    let label = item
+        .lcsc_id()
+        .unwrap_or_else(|| item.display_name().to_string());
+    let content = models.clean(&label, &content);
     // The STEP is stored in LCEDA's own frame, which does not always rest on the board plane.
     fs::write(&out_file, crate::step_model::place_step_on_board(&content))?;
     Ok(out_file)
@@ -184,6 +190,7 @@ pub(crate) async fn load_placed_step_for_pcblib(
     client: &LcedaClient,
     item: &SearchItem,
     model_candidates: &[String],
+    models: &ModelCleanup,
 ) -> Option<ModelData> {
     let mut candidates = model_candidates.to_vec();
     if item.model_uuid.is_some() {
@@ -223,6 +230,10 @@ pub(crate) async fn load_placed_step_for_pcblib(
             }
         };
         let _ = fs::remove_file(&downloaded);
+        let label = item
+            .lcsc_id()
+            .unwrap_or_else(|| item.display_name().to_string());
+        let bytes = models.clean(&label, &bytes);
 
         let placed = scratch_step_path();
         let written = fs::File::create(&placed)
@@ -250,9 +261,10 @@ pub(crate) async fn build_pcblib_library_from_detail(
     item: &SearchItem,
     footprint_data: &Value,
     component_name: &str,
+    models: &ModelCleanup,
 ) -> Result<PcbLibrary> {
     let candidates = step_model_candidates(item, footprint_data);
-    let step_data = load_placed_step_for_pcblib(client, item, &candidates).await;
+    let step_data = load_placed_step_for_pcblib(client, item, &candidates, models).await;
     build_pcblib_from_payload_with_model(footprint_data, component_name, step_data)
 }
 
@@ -306,12 +318,13 @@ pub async fn build_pcblib_library_for_item(
     client: &LcedaClient,
     item: &SearchItem,
     footprint_name: &str,
+    models: &ModelCleanup,
 ) -> Result<PcbLibrary> {
     let footprint_uuid = item
         .footprint_uuid()
         .ok_or(AppError::MissingSymbolOrFootprint)?;
     let footprint_data = client.component_detail(&footprint_uuid).await?;
-    build_pcblib_library_from_detail(client, item, &footprint_data, footprint_name).await
+    build_pcblib_library_from_detail(client, item, &footprint_data, footprint_name, models).await
 }
 
 pub async fn build_schlib_component_for_item(
@@ -358,6 +371,7 @@ pub async fn export_pcblib(
     item: &SearchItem,
     out_dir: &Path,
     force: bool,
+    models: &ModelCleanup,
 ) -> Result<PathBuf> {
     fs::create_dir_all(out_dir)?;
     let footprint_uuid = item
@@ -371,7 +385,8 @@ pub async fn export_pcblib(
     }
 
     let library =
-        build_pcblib_library_from_detail(client, item, &footprint_data, &footprint_name).await?;
+        build_pcblib_library_from_detail(client, item, &footprint_data, &footprint_name, models)
+            .await?;
     write_pcblib(&library, &out_file)?;
     Ok(out_file)
 }

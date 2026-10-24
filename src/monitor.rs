@@ -53,6 +53,7 @@ pub struct MonitorState {
     pub export_progress: Option<ExportProgressState>,
     pub export_mode: String,
     pub export_kicad_mode: String,
+    pub export_cadence_mode: String,
     pub export_merge: bool,
     pub export_append: bool,
     pub export_library_name: String,
@@ -60,6 +61,8 @@ pub struct MonitorState {
     pub export_continue_on_error: bool,
     pub export_lcsc_english: bool,
     pub export_force: bool,
+    /// Rebuild downloaded 3D models without the EasyEDA logo.
+    pub export_remove_model_logo: bool,
     pub matched_save_path: String,
     pub bom_language: String,
     pub bom_running: bool,
@@ -83,6 +86,7 @@ impl MonitorState {
             export_progress: None,
             export_mode: "full".to_string(),
             export_kicad_mode: "full".to_string(),
+            export_cadence_mode: "full".to_string(),
             export_merge: false,
             export_append: false,
             export_library_name: "SeExMerged".to_string(),
@@ -90,6 +94,7 @@ impl MonitorState {
             export_continue_on_error: false,
             export_lcsc_english: false,
             export_force: false,
+            export_remove_model_logo: true,
             matched_save_path: default_save_path("matched.csv"),
             bom_language: "chinese".to_string(),
             bom_running: false,
@@ -262,6 +267,7 @@ impl MonitorState {
     pub fn set_export_target(&mut self, target: String) {
         self.export_target = match target.trim().to_ascii_lowercase().as_str() {
             "kicad" => "kicad".to_string(),
+            "cadence" => "cadence".to_string(),
             _ => "altium".to_string(),
         };
     }
@@ -282,6 +288,19 @@ impl MonitorState {
             "3d" => "3d".to_string(),
             _ => "full".to_string(),
         };
+    }
+
+    pub fn set_export_cadence_mode(&mut self, mode: String) {
+        self.export_cadence_mode = match mode.trim().to_ascii_lowercase().as_str() {
+            "symbol" => "symbol".to_string(),
+            "footprint" => "footprint".to_string(),
+            "3d" => "3d".to_string(),
+            _ => "full".to_string(),
+        };
+    }
+
+    pub fn set_export_remove_model_logo(&mut self, remove: bool) {
+        self.export_remove_model_logo = remove;
     }
 
     pub fn set_export_merge(&mut self, merge: bool) {

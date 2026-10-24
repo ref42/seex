@@ -682,10 +682,12 @@ mod tests {
                 uuid: "model-uuid".to_string(),
                 title: "BODY-H1.0".to_string(),
                 rotation_z: 0.0,
+                placement: None,
             }),
             manufacturer: "SEEX".to_string(),
             datasheet: String::new(),
             jlc_id: String::new(),
+            package: String::new(),
         }
     }
 }

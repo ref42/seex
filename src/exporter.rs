@@ -1,11 +1,15 @@
 use crate::altium::workflow::download_step;
 use crate::batch::{BatchOptions, BatchSummary, export_batch};
+use crate::cadence::{
+    CadenceBatchOptions, CadenceBatchSummary, CadenceExportOptions, export_cadence_batch,
+};
 use crate::cli::KicadVersion;
 use crate::kicad::{
     KicadBatchOptions, KicadBatchSummary, KicadExportOptions, KicadLibraryOptions,
     export_kicad_batch,
 };
 use crate::lceda::LcedaClient;
+use crate::step_model::ModelCleanup;
 use futures_util::stream::{self, StreamExt};
 use std::fs;
 use std::io::{BufWriter, Write};
@@ -32,6 +36,8 @@ pub struct ExportRequest {
     pub force: bool,
     pub schematic_stroke_color: [u8; 3],
     pub schematic_fill_color: Option<[u8; 3]>,
+    /// Rebuild downloaded 3D models without the EasyEDA logo (on by default).
+    pub remove_model_logo: bool,
 }
 
 pub fn spawn_export(state: Arc<Mutex<MonitorState>>, req: ExportRequest) {
@@ -47,19 +53,20 @@ pub fn spawn_export(state: Arc<Mutex<MonitorState>>, req: ExportRequest) {
 
     std::thread::spawn(move || {
         let started_at = Instant::now();
-        let input_path = if is_kicad_target(&req) {
-            None
-        } else {
+        let models = Arc::new(ModelCleanup::new(req.remove_model_logo));
+        let input_path = if is_altium_target(&req) {
             Some(create_temp_input_path())
+        } else {
+            None
         };
         let result: Result<String, String> = (|| {
             if let Some(path) = &input_path {
                 write_ids_file(path, &req.ids)?;
             }
             set_progress(&state, running_message(&req), 0, req.ids.len());
-            if !is_kicad_target(&req) {
+            if is_altium_target(&req) {
                 if normalize_altium_mode(&req.mode) == "3d" {
-                    return run_altium_3d_api(&req, &state, started_at);
+                    return run_altium_3d_api(&req, &state, started_at, &models);
                 }
                 let input_path = input_path
                     .as_ref()
@@ -69,6 +76,7 @@ pub fn spawn_export(state: Arc<Mutex<MonitorState>>, req: ExportRequest) {
                     input_path,
                     started_at,
                     progress_callback(state.clone()),
+                    &models,
                 );
             }
 
@@ -77,9 +85,20 @@ pub fn spawn_export(state: Arc<Mutex<MonitorState>>, req: ExportRequest) {
                 .build()
                 .map_err(|err| err.to_string())?;
             runtime.block_on(async {
+                if is_cadence_target(&req) {
+                    let summary = export_cadence_batch(build_cadence_batch_options(
+                        &req,
+                        Some(progress_callback(state.clone())),
+                        &models,
+                    ))
+                    .await
+                    .map_err(|e| e.to_string())?;
+                    return Ok(format_cadence_summary(&req, &summary, started_at.elapsed()));
+                }
                 let summary = export_kicad_batch(build_kicad_batch_options(
                     &req,
                     Some(progress_callback(state.clone())),
+                    &models,
                 ))
                 .await
                 .map_err(|e| e.to_string())?;
@@ -91,10 +110,16 @@ pub fn spawn_export(state: Arc<Mutex<MonitorState>>, req: ExportRequest) {
             let _ = fs::remove_file(path);
         }
 
-        let message = match result {
+        let mut message = match result {
             Ok(message) => message,
             Err(err) => format_error(&req, &err, started_at.elapsed()),
         };
+        if exports_models(&req) {
+            for line in models.summary_lines() {
+                message.push('\n');
+                message.push_str(&line);
+            }
+        }
 
         if let Ok(mut s) = state.lock() {
             s.export_running = false;
@@ -124,6 +149,8 @@ fn running_message(req: &ExportRequest) -> String {
     let count = req.ids.len();
     if is_kicad_target(req) {
         format!("Running export KiCad batch for {} items...", count)
+    } else if is_cadence_target(req) {
+        format!("Running Cadence export for {} items...", count)
     } else if normalize_altium_mode(&req.mode) == "3d" {
         format!("Downloading Altium 3D models for {} items...", count)
     } else if req.merge && req.append {
@@ -160,6 +187,7 @@ fn run_altium_api(
     input_path: &Path,
     started_at: Instant,
     progress: ExportProgressCallback,
+    models: &Arc<ModelCleanup>,
 ) -> Result<String, String> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -169,7 +197,7 @@ fn run_altium_api(
         let client = LcedaClient::new();
         let summary = export_batch(
             &client,
-            build_batch_options(req, &input_path.to_path_buf(), Some(progress)),
+            build_batch_options(req, &input_path.to_path_buf(), Some(progress), models),
         )
         .await
         .map_err(|e| e.to_string())?;
@@ -181,6 +209,7 @@ fn run_altium_3d_api(
     req: &ExportRequest,
     state: &Arc<Mutex<MonitorState>>,
     started_at: Instant,
+    models: &Arc<ModelCleanup>,
 ) -> Result<String, String> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -195,10 +224,11 @@ fn run_altium_3d_api(
         let mut jobs = stream::iter(req.ids.clone().into_iter().map(|id| {
             let client = client.clone();
             let output = output.clone();
+            let models = Arc::clone(models);
             async move {
                 let result = async {
                     let item = client.select_item(&id, 1).await?;
-                    download_step(&client, &item, &output, force).await
+                    download_step(&client, &item, &output, force, &models).await
                 }
                 .await;
                 (id, result)
@@ -247,6 +277,7 @@ fn build_batch_options(
     req: &ExportRequest,
     input_path: &PathBuf,
     progress: Option<ExportProgressCallback>,
+    models: &Arc<ModelCleanup>,
 ) -> BatchOptions {
     let mode = normalize_altium_mode(&req.mode);
     let append = req.append && req.merge;
@@ -265,6 +296,7 @@ fn build_batch_options(
         force: req.force,
         schematic_stroke_color: req.schematic_stroke_color,
         schematic_fill_color: req.schematic_fill_color,
+        models: Arc::clone(models),
         progress,
     }
 }
@@ -272,6 +304,7 @@ fn build_batch_options(
 fn build_kicad_batch_options(
     req: &ExportRequest,
     progress: Option<ExportProgressCallback>,
+    models: &Arc<ModelCleanup>,
 ) -> KicadBatchOptions {
     let mode = normalize_kicad_mode(&req.mode);
     KicadBatchOptions {
@@ -290,11 +323,38 @@ fn build_kicad_batch_options(
             full: mode == "full",
             force: req.force,
             kicad_version: KicadVersion::V6,
+            models: Arc::clone(models),
         },
         english_metadata: req.lcsc_english,
         parallel: req.parallel.max(1),
         continue_on_error: req.continue_on_error,
         append: req.append,
+        progress,
+    }
+}
+
+fn build_cadence_batch_options(
+    req: &ExportRequest,
+    progress: Option<ExportProgressCallback>,
+    models: &Arc<ModelCleanup>,
+) -> CadenceBatchOptions {
+    let mode = normalize_cadence_mode(&req.mode);
+    CadenceBatchOptions {
+        ids: req.ids.clone(),
+        output: PathBuf::from(normalize_output_path(&req.output_path)),
+        library_name: resolve_library_name(req),
+        export: CadenceExportOptions {
+            symbol: mode == "symbol",
+            footprint: mode == "footprint",
+            model_3d: mode == "3d",
+            full: mode == "full",
+            force: req.force,
+        },
+        english_metadata: req.lcsc_english,
+        parallel: req.parallel.max(1),
+        continue_on_error: req.continue_on_error,
+        append: req.append,
+        models: Arc::clone(models),
         progress,
     }
 }
@@ -314,9 +374,29 @@ fn is_kicad_target(req: &ExportRequest) -> bool {
     normalize_target(&req.target) == "kicad"
 }
 
+fn is_cadence_target(req: &ExportRequest) -> bool {
+    normalize_target(&req.target) == "cadence"
+}
+
+fn is_altium_target(req: &ExportRequest) -> bool {
+    normalize_target(&req.target) == "altium"
+}
+
+/// Whether the run downloads 3D models, so its logo removal is worth reporting.
+fn exports_models(req: &ExportRequest) -> bool {
+    if is_altium_target(req) {
+        matches!(normalize_altium_mode(&req.mode), "full" | "pcblib" | "3d")
+    } else if is_cadence_target(req) {
+        matches!(normalize_cadence_mode(&req.mode), "full" | "3d")
+    } else {
+        matches!(normalize_kicad_mode(&req.mode), "full" | "3d")
+    }
+}
+
 fn normalize_target(target: &str) -> &str {
     match target.trim().to_ascii_lowercase().as_str() {
         "kicad" => "kicad",
+        "cadence" => "cadence",
         _ => "altium",
     }
 }
@@ -339,6 +419,15 @@ fn normalize_kicad_mode(mode: &str) -> &str {
     }
 }
 
+fn normalize_cadence_mode(mode: &str) -> &str {
+    match mode.trim().to_ascii_lowercase().as_str() {
+        "symbol" => "symbol",
+        "footprint" => "footprint",
+        "3d" => "3d",
+        _ => "full",
+    }
+}
+
 fn normalize_output_path(path: &str) -> String {
     let trimmed = path.trim();
     if trimmed.is_empty() {
@@ -349,7 +438,7 @@ fn normalize_output_path(path: &str) -> String {
 }
 
 fn effective_library_name(req: &ExportRequest) -> Option<String> {
-    if !is_kicad_target(req) && !req.merge {
+    if is_altium_target(req) && !req.merge {
         return None;
     }
 
@@ -480,6 +569,68 @@ fn format_kicad_summary(
     lines.join("\n")
 }
 
+fn format_cadence_summary(
+    req: &ExportRequest,
+    summary: &CadenceBatchSummary,
+    elapsed: Duration,
+) -> String {
+    let mut lines = vec![
+        "Status: Success".to_string(),
+        "Target: Cadence".to_string(),
+        format!("Elapsed: {}", format_duration(elapsed)),
+        format!(
+            "export Cadence batch complete. Total: {} | Skipped: {} | Success: {} | Failed: {}",
+            summary.total, summary.skipped, summary.success, summary.failed,
+        ),
+        format!(
+            "Targets: {} | Parallel: {}",
+            mode_label(req),
+            req.parallel.max(1),
+        ),
+        format!(
+            "Continue on error: {} | LCSC English: {} | Force: {}",
+            yes_no(req.continue_on_error),
+            yes_no(req.lcsc_english),
+            yes_no(req.force),
+        ),
+        format!("Library name: {}", resolve_library_name(req)),
+        format!(
+            "Capture symbols: {} | Allegro footprints: {} ({} IPC-7352) | 3D models: written {} | skipped {} | missing {}",
+            summary.symbols_written,
+            summary.footprints_written,
+            summary.footprints_ipc,
+            summary.models_written,
+            summary.models_skipped,
+            summary.models_missing,
+        ),
+    ];
+
+    if !summary.failed_ids.is_empty() {
+        lines.push(format!("Failed IDs: {}", summary.failed_ids.join(", ")));
+    }
+    if !summary.failure_details.is_empty() {
+        lines.push("Failure details:".to_string());
+        for detail in &summary.failure_details {
+            lines.push(format!("- {}", detail));
+        }
+    }
+    for path in &summary.generated_files {
+        lines.push(format!("Generated: {}", path.display()));
+    }
+    lines.push("Capture: File > Import > Library XML turns the .xml into an .olb".to_string());
+    lines.push(
+        "Allegro: in PCB Editor run skill load(\"<library>_allegro/<library>.il\") to build the .dra/.psm/.pad files"
+            .to_string(),
+    );
+    if !summary.notes.is_empty() {
+        lines.push("Notes:".to_string());
+        for note in &summary.notes {
+            lines.push(format!("- {}", note));
+        }
+    }
+    lines.join("\n")
+}
+
 fn format_duration(duration: Duration) -> String {
     let total_ms = duration.as_millis();
     if total_ms < 60_000 {
@@ -500,6 +651,8 @@ fn format_duration(duration: Duration) -> String {
 fn format_error(req: &ExportRequest, error: &str, elapsed: Duration) -> String {
     let target = if is_kicad_target(req) {
         "KiCad"
+    } else if is_cadence_target(req) {
+        "Cadence"
     } else {
         "Altium"
     };
@@ -527,7 +680,14 @@ fn format_error(req: &ExportRequest, error: &str, elapsed: Duration) -> String {
 }
 
 fn mode_label(req: &ExportRequest) -> &'static str {
-    if is_kicad_target(req) {
+    if is_cadence_target(req) {
+        match normalize_cadence_mode(&req.mode) {
+            "symbol" => "Capture",
+            "footprint" => "Allegro",
+            "3d" => "3D",
+            _ => "Full",
+        }
+    } else if is_kicad_target(req) {
         match normalize_kicad_mode(&req.mode) {
             "symbol" => "Symbol",
             "footprint" => "Footprint",
@@ -553,7 +713,14 @@ fn merge_label(req: &ExportRequest) -> &'static str {
 }
 
 fn target_folders(req: &ExportRequest) -> Vec<&'static str> {
-    if is_kicad_target(req) {
+    if is_cadence_target(req) {
+        match normalize_cadence_mode(&req.mode) {
+            "symbol" => vec!["*.xml"],
+            "footprint" => vec!["*_allegro"],
+            "3d" => vec!["*_step"],
+            _ => vec!["*.xml", "*_allegro", "*_step"],
+        }
+    } else if is_kicad_target(req) {
         match normalize_kicad_mode(&req.mode) {
             "symbol" => vec!["*.kicad_sym"],
             "footprint" => vec!["*.pretty"],

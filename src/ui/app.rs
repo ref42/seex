@@ -1263,6 +1263,7 @@ pub fn apply_config_to_state(config: &AppConfig, state: &mut MonitorState) {
     state.set_export_target(config.export.target.clone());
     state.set_export_mode(config.export.mode.clone());
     state.set_export_kicad_mode(config.export.kicad_mode.clone());
+    state.set_export_cadence_mode(config.export.cadence_mode.clone());
     state.set_export_merge(config.export.merge);
     state.set_export_append(config.export.append);
     state.set_export_library_name(config.export.library_name.clone());
@@ -1270,6 +1271,7 @@ pub fn apply_config_to_state(config: &AppConfig, state: &mut MonitorState) {
     state.set_export_continue_on_error(config.export.continue_on_error);
     state.set_export_lcsc_english(config.export.lcsc_english);
     state.set_export_force(config.export.force);
+    state.set_export_remove_model_logo(config.export.remove_model_logo);
     state.set_matched_save_path(config.monitor.matched_save_path.clone());
     state.set_bom_language(config.monitor.bom_language.clone());
 }
@@ -1290,6 +1292,7 @@ pub fn snapshot_config(
             output_path: state.export_output_path.clone(),
             mode: state.export_mode.clone(),
             kicad_mode: state.export_kicad_mode.clone(),
+            cadence_mode: state.export_cadence_mode.clone(),
             merge: state.export_merge,
             append: state.export_append,
             library_name: state.export_library_name.clone(),
@@ -1299,6 +1302,7 @@ pub fn snapshot_config(
             force: state.export_force,
             schematic_stroke_color,
             schematic_fill_color,
+            remove_model_logo: state.export_remove_model_logo,
         },
         monitor: MonitorConfig {
             matched_save_path: state.matched_save_path.clone(),

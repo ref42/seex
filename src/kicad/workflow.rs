@@ -431,7 +431,10 @@ async fn export_one_kicad_component(
     })
 }
 
-async fn apply_requested_metadata(component_data: &mut ComponentData, client: Option<&LcscClient>) {
+pub(crate) async fn apply_requested_metadata(
+    component_data: &mut ComponentData,
+    client: Option<&LcscClient>,
+) {
     let product = if let Some(client) = client {
         client
             .product_detail_optional(&component_data.lcsc_id)
@@ -554,7 +557,7 @@ fn validate_library_options(options: &KicadLibraryOptions) -> Result<()> {
     Ok(())
 }
 
-fn validate_lcsc_id(id: &str) -> Result<()> {
+pub(crate) fn validate_lcsc_id(id: &str) -> Result<()> {
     let trimmed = id.trim();
     let Some(digits) = trimmed
         .strip_prefix('C')
@@ -607,6 +610,7 @@ mod tests {
             full: false,
             force: false,
             kicad_version: KicadVersion::V6,
+            models: Default::default(),
         };
 
         let err = validate_targets(&export).unwrap_err().to_string();
@@ -661,6 +665,7 @@ mod tests {
             full: true,
             force: false,
             kicad_version: KicadVersion::V6,
+            models: Default::default(),
         };
 
         let path = kicad_checkpoint_path("lib", Path::new("out"), &export)
@@ -702,6 +707,7 @@ mod tests {
                 full: false,
                 force: false,
                 kicad_version: KicadVersion::V6,
+                models: Default::default(),
             },
             english_metadata: false,
             parallel: 1,
@@ -762,6 +768,7 @@ mod tests {
                 full: false,
                 force: false,
                 kicad_version: KicadVersion::V6,
+                models: Default::default(),
             },
             english_metadata: false,
             parallel: 1,
@@ -810,6 +817,7 @@ mod tests {
             manufacturer: "CN Manufacturer".to_string(),
             datasheet: "https://source.test/ds".to_string(),
             jlc_id: String::new(),
+            package: String::new(),
         };
 
         let metadata = ResolvedMetadata::from_component_data(&component_data, None);

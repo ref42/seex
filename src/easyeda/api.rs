@@ -13,13 +13,18 @@ use tokio::sync::{Mutex, OnceCell};
 const MAX_REQUEST_ATTEMPTS: u32 = 4;
 const RETRY_BASE_DELAY_MS: u64 = 250;
 const STEP_DOWNLOAD_ATTEMPTS: u32 = 2;
-const STEP_DOWNLOAD_TOTAL_TIMEOUT_SECS: u64 = 60;
+/// Detailed models reach 10 MB; through the easyeda.com mirror one can take well
+/// over a minute.
+const STEP_DOWNLOAD_TOTAL_TIMEOUT_SECS: u64 = 180;
 const STEP_DOWNLOAD_STALL_TIMEOUT_SECS: u64 = 20;
 const UPSTREAM_BLOCK_RETRY_DELAY_MS: u64 = 10_000;
 const UPSTREAM_BLOCK_COOLDOWN_MS: u64 = 45_000;
 const COMPONENT_REQUEST_INTERVAL_MS: u64 = 150;
 const MODEL_REQUEST_INTERVAL_MS: u64 = 150;
 const MODEL_DOWNLOAD_BASE_URL: &str = "https://modules.lceda.cn/qAxj6KHrDKw4blvCG8QJPs7Y";
+/// The same models on EasyEDA's international host, used when lceda.cn cannot be
+/// reached from the user's network (seen as a failed TLS handshake).
+const MODEL_DOWNLOAD_MIRROR_URL: &str = "https://modules.easyeda.com/qAxj6KHrDKw4blvCG8QJPs7Y";
 /// How many downloaded models the cache keeps.
 ///
 /// The models are the largest thing a run holds: a 25-part batch of them was
@@ -403,6 +408,7 @@ impl EasyedaApi {
             manufacturer,
             datasheet,
             jlc_id,
+            package,
         })
     }
 
@@ -438,6 +444,7 @@ impl EasyedaApi {
                             uuid,
                             title,
                             rotation_z,
+                            placement: model_placement(attrs),
                         });
                     }
                 }
@@ -448,6 +455,7 @@ impl EasyedaApi {
 
     pub async fn download_3d_step(&self, uuid: &str) -> Result<Arc<Vec<u8>>> {
         let url = format!("{MODEL_DOWNLOAD_BASE_URL}/{uuid}");
+        let mirror = format!("{MODEL_DOWNLOAD_MIRROR_URL}/{uuid}");
         let cell = {
             let mut cache = self.step_cache.lock().await;
             cache
@@ -458,10 +466,21 @@ impl EasyedaApi {
 
         let result = cell
             .get_or_init(|| async {
-                self.download_with_retry(&url, "STEP", uuid, ModelSink::Memory)
+                let bytes = match self
+                    .download_with_retry(&url, "STEP", uuid, ModelSink::Memory)
                     .await
-                    .map(|bytes| Arc::new(bytes.expect("a memory download returns its bytes")))
-                    .map_err(|e| e.to_string())
+                {
+                    Ok(bytes) => Ok(bytes),
+                    Err(primary) => {
+                        log::warn!(
+                            "STEP download from lceda.cn failed ({primary}); trying easyeda.com"
+                        );
+                        self.download_with_retry(&mirror, "STEP", uuid, ModelSink::Memory)
+                            .await
+                            .map_err(|mirror_err| format!("{primary}; mirror: {mirror_err}"))
+                    }
+                };
+                bytes.map(|bytes| Arc::new(bytes.expect("a memory download returns its bytes")))
             })
             .await
             .clone();
@@ -484,8 +503,15 @@ impl EasyedaApi {
     /// hold one model in memory per parallel part while they are in flight.
     pub async fn download_3d_step_to_file(&self, uuid: &str, path: &Path) -> Result<()> {
         let url = format!("{MODEL_DOWNLOAD_BASE_URL}/{uuid}");
-        self.download_with_retry(&url, "STEP", uuid, ModelSink::File(path))
-            .await?;
+        if let Err(primary) = self
+            .download_with_retry(&url, "STEP", uuid, ModelSink::File(path))
+            .await
+        {
+            log::warn!("STEP download from lceda.cn failed ({primary}); trying easyeda.com");
+            let mirror = format!("{MODEL_DOWNLOAD_MIRROR_URL}/{uuid}");
+            self.download_with_retry(&mirror, "STEP", uuid, ModelSink::File(path))
+                .await?;
+        }
         Ok(())
     }
 
@@ -895,4 +921,33 @@ mod tests {
             Duration::from_millis(UPSTREAM_BLOCK_RETRY_DELAY_MS * 2)
         );
     }
+}
+
+/// `c_origin` / `z` / `c_rotation` of an EasyEDA `outline3D` node.
+fn model_placement(attrs: &serde_json::Value) -> Option<crate::easyeda::models::ModelPlacement> {
+    let numbers = |key: &str| -> Vec<f64> {
+        let text = match attrs.get(key) {
+            Some(serde_json::Value::String(text)) => text.clone(),
+            Some(serde_json::Value::Number(number)) => number.to_string(),
+            _ => String::new(),
+        };
+        text.split(',')
+            .filter_map(|part| part.trim().parse::<f64>().ok())
+            .collect()
+    };
+    let origin = numbers("c_origin");
+    if origin.len() < 2 {
+        return None;
+    }
+    let rotation = numbers("c_rotation");
+    Some(crate::easyeda::models::ModelPlacement {
+        origin_x: origin[0],
+        origin_y: origin[1],
+        z: numbers("z").first().copied().unwrap_or(0.0),
+        rotation: [
+            rotation.first().copied().unwrap_or(0.0),
+            rotation.get(1).copied().unwrap_or(0.0),
+            rotation.get(2).copied().unwrap_or(0.0),
+        ],
+    })
 }

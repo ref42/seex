@@ -13,51 +13,11 @@ pub fn convert_symbol(
     // Use LCSC ID as unique identifier to prevent name collisions
     let component_name = format!("{}_{}", sanitize_name(&component_data.title), lcsc_id);
     let footprint_name = component_name.clone();
-
-    let common_unit = SymbolImporter::parse(&component_data.data_str).and_then(|symbol| {
-        convert_symbol_unit(&symbol, component_data.bbox_x, component_data.bbox_y)
-    })?;
-
-    let (reference, units) = if component_data.symbol_parts.is_empty() {
-        let reference = common_unit
-            .reference
-            .clone()
-            .unwrap_or_else(|| "U".to_string());
-        (reference, Vec::new())
-    } else {
-        let mut reference = common_unit.reference.clone();
-        let mut units = Vec::new();
-
-        for part in &component_data.symbol_parts {
-            let ee_symbol = SymbolImporter::parse(&part.data_str)?;
-            let unit = convert_symbol_unit(&ee_symbol, part.bbox_x, part.bbox_y)?;
-            if reference.is_none() {
-                reference = unit.reference.clone();
-            }
-            units.push(unit.geometry);
-        }
-
-        (reference.unwrap_or_else(|| "U".to_string()), units)
-    };
-
-    let ki_symbol = kicad::KiSymbol {
-        name: component_name.clone(),
-        reference,
-        value: component_data.title.clone(),
-        description: component_data.description.clone(),
-        footprint: format!("{}:{}", lib_manager.footprint_lib_name(), footprint_name),
-        datasheet: component_data.datasheet.clone(),
-        manufacturer: component_data.manufacturer.clone(),
-        lcsc_id: component_data.lcsc_id.clone(),
-        jlc_id: component_data.jlc_id.clone(),
-        units,
-        pins: common_unit.geometry.pins,
-        rectangles: common_unit.geometry.rectangles,
-        circles: common_unit.geometry.circles,
-        arcs: common_unit.geometry.arcs,
-        polylines: common_unit.geometry.polylines,
-        texts: common_unit.geometry.texts,
-    };
+    let ki_symbol = build_ki_symbol(
+        component_data,
+        &component_name,
+        format!("{}:{}", lib_manager.footprint_lib_name(), footprint_name),
+    )?;
 
     if ki_symbol.units.is_empty() {
         log::debug!("Converted symbol as a single KiCad unit");
@@ -89,6 +49,61 @@ pub fn convert_symbol(
     }
 
     Ok(())
+}
+
+/// Convert EasyEDA symbol data into the EDA-neutral `KiSymbol` model.
+///
+/// Coordinates stay in EasyEDA units (1 px = 10 mil) with Y pointing up, exactly as
+/// the KiCad exporter expects. Other back ends (e.g. Cadence) reuse this model.
+pub fn build_ki_symbol(
+    component_data: &ComponentData,
+    component_name: &str,
+    footprint_ref: String,
+) -> Result<kicad::KiSymbol> {
+    let common_unit = SymbolImporter::parse(&component_data.data_str).and_then(|symbol| {
+        convert_symbol_unit(&symbol, component_data.bbox_x, component_data.bbox_y)
+    })?;
+
+    let (reference, units) = if component_data.symbol_parts.is_empty() {
+        let reference = common_unit
+            .reference
+            .clone()
+            .unwrap_or_else(|| "U".to_string());
+        (reference, Vec::new())
+    } else {
+        let mut reference = common_unit.reference.clone();
+        let mut units = Vec::new();
+
+        for part in &component_data.symbol_parts {
+            let ee_symbol = SymbolImporter::parse(&part.data_str)?;
+            let unit = convert_symbol_unit(&ee_symbol, part.bbox_x, part.bbox_y)?;
+            if reference.is_none() {
+                reference = unit.reference.clone();
+            }
+            units.push(unit.geometry);
+        }
+
+        (reference.unwrap_or_else(|| "U".to_string()), units)
+    };
+
+    Ok(kicad::KiSymbol {
+        name: component_name.to_string(),
+        reference,
+        value: component_data.title.clone(),
+        description: component_data.description.clone(),
+        footprint: footprint_ref,
+        datasheet: component_data.datasheet.clone(),
+        manufacturer: component_data.manufacturer.clone(),
+        lcsc_id: component_data.lcsc_id.clone(),
+        jlc_id: component_data.jlc_id.clone(),
+        units,
+        pins: common_unit.geometry.pins,
+        rectangles: common_unit.geometry.rectangles,
+        circles: common_unit.geometry.circles,
+        arcs: common_unit.geometry.arcs,
+        polylines: common_unit.geometry.polylines,
+        texts: common_unit.geometry.texts,
+    })
 }
 
 struct ConvertedSymbolUnit {

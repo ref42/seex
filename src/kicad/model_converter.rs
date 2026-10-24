@@ -87,6 +87,7 @@ pub async fn convert_3d_model(
 
     match result {
         Ok(step_data) => {
+            let step_data = args.models.clean(lcsc_id, &step_data);
             lib_manager.write_step_model(&model_name, &step_data)?;
             log::debug!("Wrote STEP model: {}", model_name);
             Ok(ModelExportStatus::Written)

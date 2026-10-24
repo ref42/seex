@@ -5,7 +5,7 @@
 <h1 align="center">SeEx(Seek and Export)</h1>
 
 <p align="center">
-  <strong>批量导出立创商城元件为Altium Designer（AD）、KiCad可用的格式。</strong>
+  <strong>批量导出立创商城元件为Altium Designer（AD）、KiCad、Cadence（OrCAD Capture / Allegro）可用的格式。</strong>
 </p>
 
 <p align="center"><a href="README.en.md">English</a> | <a href="README.md">简体中文</a></p>
@@ -32,24 +32,32 @@
 - [x] 可以单独导出器件的`schlib`, `pcblib`（`pcblib`已经内嵌了`step`模型）。
 - [x] 也可以批量导出。
 - [x] 支持导出多个器件到同一个`schlib`, `pcblib`，即合并导出。
+### Cadence（OrCAD Capture / Allegro）部分
+- [x] 导出`Capture`原理图符号：一个`Library XML`文件，在`Capture`中通过`File > Import > Library XML`转换为`.olb`。
+- [x] 导出`Allegro`封装：每个封装一个`SKILL`脚本，外加一个库脚本；在`Allegro PCB Editor`的命令窗口执行`skill load("<库>_allegro/<库>.il")`，即在同一目录生成`.dra`、`.psm`和`.pad`。
+- [x] 导出`3D`模型（`step`），封装中已按立创EDA的位置映射好模型。
+- [x] 标准封装（贴片阻容、`SOT`、`SOD`、`SOIC`、`QFN`等）按`IPC-7352`计算焊盘并核对厂家焊盘；其余封装保留厂家焊盘，按`IPC-7352`规则生成丝印、装配层和占位区。
+- [x] `seex`本身不调用任何`Cadence`程序，导入由用户在`Cadence`中完成。
 ### 共同部分
 - [x] 均支持选择中英文元数据导出。
 - [x] 均支持多线程下载。
 - [x] 均支持向已现存的经由`seex`导出的库里添加新的器件/元件。
 - [x] 均支持自定义原理图的描边和填充颜色。
 - [x] 均支持单独导出`3D`模型。
+- [x] 默认去除`3D`模型上的立创EDA标志（水印），重建模型；无法安全去除时保留原模型，并在导出结果中列出这些元件。
 
 ## SeEx支持的`EDA`版本？？？
 > [!NOTE]
 > 这些版本仅为目前所知，不排除`seex`支持更多的版本。如果您无法在更低版本的`EDA`软件中打开`seex`导出的库，可以在`issue`里提出，会考虑适配。
 - [x] `KiCad 9.0` ~ `Latest`
 - [x] `Altium Designer 23.x` ~ `Latest`
+- [x] `Cadence SPB 26.1`（OrCAD X Capture / Allegro X）；`Allegro`封装脚本需要支持`SKILL`的版本（`Allegro PCB Designer`或`OrCAD PCB Designer Professional`）
 
 ## SeEx未来想做啥？？？
-- [ ] 支持更多的`EDA`工具，类似`allegro`, `pads`等。
+- [ ] 支持更多的`EDA`工具，类似`pads`等。
 - [ ] 继续完善现在的工作流，修复更多隐藏的`bug`。
 - [ ] 持续优化交互功能，提升用户使用体验，优化图标，尝试新的设计语言。
-- [ ] 探索一种普遍适用的方案，用于除去/隐去`3D`模型的一部分组件，类似特定标识符等等。
+- [ ] 探索一种普遍适用的方案，用于除去/隐去`3D`模型的一部分组件（立创EDA标志已默认去除），类似特定标识符等等。
 
 ## SeEx期待的贡献者？？？
 - [x] 具有软件设计经验，能持续维护软件。

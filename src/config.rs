@@ -58,6 +58,7 @@ pub struct ExportConfig {
     pub output_path: String,
     pub mode: String,
     pub kicad_mode: String,
+    pub cadence_mode: String,
     pub merge: bool,
     pub append: bool,
     pub library_name: String,
@@ -70,6 +71,8 @@ pub struct ExportConfig {
     /// `None` is the "no colour" choice: the symbol body is exported without a
     /// fill rather than painted in some default.
     pub schematic_fill_color: Option<[u8; 3]>,
+    /// Rebuild downloaded 3D models without the EasyEDA logo; on unless turned off.
+    pub remove_model_logo: bool,
 }
 
 impl Default for ExportConfig {
@@ -79,6 +82,7 @@ impl Default for ExportConfig {
             output_path: "export".to_string(),
             mode: "full".to_string(),
             kicad_mode: "full".to_string(),
+            cadence_mode: "full".to_string(),
             merge: false,
             append: false,
             library_name: "SeExMerged".to_string(),
@@ -89,6 +93,7 @@ impl Default for ExportConfig {
             // Preserve the existing Altium symbol colors as the initial choices.
             schematic_stroke_color: [11, 56, 104],
             schematic_fill_color: Some([255, 255, 224]),
+            remove_model_logo: true,
         }
     }
 }

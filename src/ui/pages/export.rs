@@ -82,6 +82,18 @@ fn failure_reason(result: &str) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
+/// The parts whose exported 3D model still carries the EasyEDA logo.
+fn models_with_logo(result: &str) -> Option<String> {
+    result
+        .lines()
+        .find_map(|line| {
+            line.trim()
+                .strip_prefix(crate::step_model::LOGO_KEPT_PREFIX)
+        })
+        .map(|parts| parts.trim().to_string())
+        .filter(|parts| !parts.is_empty())
+}
+
 impl SeexUi {
     pub(crate) fn export_page(
         &mut self,
@@ -245,8 +257,8 @@ impl SeexUi {
                     .text_size(px(BODY))
                     .text_color(theme::muted())
                     .child(locale::t(
-                        "Altium and KiCad export",
-                        "导出 Altium 和 KiCad 库",
+                        "Altium, KiCad and Cadence export",
+                        "导出 Altium、KiCad 和 Cadence 库",
                     )),
             );
 
@@ -322,6 +334,23 @@ impl SeexUi {
                     .child(reason),
             );
         }
+        if let Some(parts) = result.as_deref().and_then(models_with_logo) {
+            let message = match locale::lang() {
+                Lang::En => format!(
+                    "The EasyEDA logo could not be removed from these 3D models; the original models were exported: {parts}"
+                ),
+                Lang::Zh => {
+                    format!("以下元件的 3D 模型无法去除 EasyEDA 标志，已导出原始模型：{parts}")
+                }
+            };
+            body = body.child(
+                div()
+                    .w_full()
+                    .text_size(px(BODY))
+                    .text_color(theme::danger())
+                    .child(message),
+            );
+        }
 
         components::section(body).into_any_element()
     }
@@ -337,10 +366,10 @@ impl SeexUi {
                 ids: state.get_unique_ids(),
                 target: state.export_target.clone(),
                 output_path: state.export_output_path.clone(),
-                mode: if state.export_target == "kicad" {
-                    state.export_kicad_mode.clone()
-                } else {
-                    state.export_mode.clone()
+                mode: match state.export_target.as_str() {
+                    "kicad" => state.export_kicad_mode.clone(),
+                    "cadence" => state.export_cadence_mode.clone(),
+                    _ => state.export_mode.clone(),
                 },
                 merge: state.export_merge,
                 append: state.export_append,
@@ -351,25 +380,30 @@ impl SeexUi {
                 force: state.export_force,
                 schematic_stroke_color: self.schematic_stroke_color,
                 schematic_fill_color: self.schematic_fill_color,
+                remove_model_logo: state.export_remove_model_logo,
             }
         };
         crate::exporter::spawn_export(std::sync::Arc::clone(&self.state), request);
     }
 
     fn export_settings_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let (target, mode, kicad_mode, merge, append, continue_on_error, force, english) = self
+        let (target, mode, merge, append, continue_on_error, force, english, remove_logo) = self
             .state
             .lock()
             .map(|state| {
                 (
                     state.export_target.clone(),
-                    state.export_mode.clone(),
-                    state.export_kicad_mode.clone(),
+                    match state.export_target.as_str() {
+                        "kicad" => state.export_kicad_mode.clone(),
+                        "cadence" => state.export_cadence_mode.clone(),
+                        _ => state.export_mode.clone(),
+                    },
                     state.export_merge,
                     state.export_append,
                     state.export_continue_on_error,
                     state.export_force,
                     state.export_lcsc_english,
+                    state.export_remove_model_logo,
                 )
             })
             .unwrap_or_default();
@@ -399,7 +433,7 @@ impl SeexUi {
             .child(components::selectable(
                 "target-altium",
                 "Altium",
-                target != "kicad",
+                target != "kicad" && target != "cadence",
                 cx.listener(|this, _event: &ClickEvent, _window, cx| {
                     if let Ok(mut state) = this.state.lock() {
                         state.set_export_target("altium".to_string());
@@ -421,6 +455,19 @@ impl SeexUi {
                     this.mark_config_dirty();
                     cx.notify();
                 }),
+            ))
+            .child(components::selectable(
+                "target-cadence",
+                "Cadence",
+                target == "cadence",
+                cx.listener(|this, _event: &ClickEvent, _window, cx| {
+                    if let Ok(mut state) = this.state.lock() {
+                        state.set_export_target("cadence".to_string());
+                    }
+                    this.close_color_pickers(cx);
+                    this.mark_config_dirty();
+                    cx.notify();
+                }),
             ));
 
         let mut scope_row =
@@ -434,38 +481,38 @@ impl SeexUi {
                     "导出范围:",
                 )));
 
-        let modes: [(&'static str, &'static str); 4] = if target == "kicad" {
-            [
+        let modes: [(&'static str, &'static str); 4] = match target.as_str() {
+            "kicad" => [
                 ("full", locale::t("Full", "完整")),
                 ("symbol", locale::t("Symbol", "符号")),
                 ("footprint", locale::t("Footprint", "封装")),
                 ("3d", "3D"),
-            ]
-        } else {
-            [
+            ],
+            "cadence" => [
+                ("full", locale::t("Full", "完整")),
+                ("symbol", "Capture"),
+                ("footprint", "Allegro"),
+                ("3d", "3D"),
+            ],
+            _ => [
                 ("full", locale::t("Full", "完整")),
                 ("schlib", "SchLib"),
                 ("pcblib", "PcbLib"),
                 ("3d", "3D"),
-            ]
-        };
-        let current_mode = if target == "kicad" {
-            kicad_mode.clone()
-        } else {
-            mode.clone()
+            ],
         };
         for (value, label) in modes {
             let target = target.clone();
             scope_row = scope_row.child(components::selectable(
                 format!("scope-{value}"),
                 label,
-                current_mode == value,
+                mode == value,
                 cx.listener(move |this, _event: &ClickEvent, _window, cx| {
                     if let Ok(mut state) = this.state.lock() {
-                        if target == "kicad" {
-                            state.set_export_kicad_mode(value.to_string());
-                        } else {
-                            state.set_export_mode(value.to_string());
+                        match target.as_str() {
+                            "kicad" => state.set_export_kicad_mode(value.to_string()),
+                            "cadence" => state.set_export_cadence_mode(value.to_string()),
+                            _ => state.set_export_mode(value.to_string()),
                         }
                     }
                     this.mark_config_dirty();
@@ -482,11 +529,13 @@ impl SeexUi {
             .flex_1()
             .gap(px(12.0));
 
-        // Merge belongs to Altium alone: a KiCad export always writes one named
-        // symbol library and one footprint directory, so there is nothing to
-        // merge. Append applies to both, with the same meaning in each.
-        if mode != "3d" {
-            if target != "kicad" {
+        // Merge belongs to Altium alone: a KiCad or Cadence export always writes
+        // one named library, so there is nothing to merge. Append applies to
+        // all three, with the same meaning in each. Altium's 3D scope only
+        // downloads models, so neither applies there.
+        let altium = target != "kicad" && target != "cadence";
+        if !(altium && mode == "3d") {
+            if altium {
                 toggles = toggles.child(components::hint(
                     components::selectable(
                         "toggle-merge",
@@ -597,6 +646,27 @@ impl SeexUi {
                 ),
                 HintArea::ExportToggles,
                 cx,
+            ))
+            .child(components::hint(
+                components::selectable(
+                    "toggle-remove-logo",
+                    locale::t("Remove 3D logo", "去除 3D 标志"),
+                    remove_logo,
+                    cx.listener(|this, _event: &ClickEvent, _window, cx| {
+                        if let Ok(mut state) = this.state.lock() {
+                            let next = !state.export_remove_model_logo;
+                            state.set_export_remove_model_logo(next);
+                        }
+                        this.mark_config_dirty();
+                        cx.notify();
+                    }),
+                ),
+                locale::t(
+                    "Remove 3D logo: rebuild 3D models without the EasyEDA logo; a model it cannot be removed from is exported as it is and listed",
+                    "去除 3D 标志：重建 3D 模型并去除 EasyEDA 标志；无法去除的模型按原样导出并列出",
+                ),
+                HintArea::ExportToggles,
+                cx,
             ));
 
         let mut body = div()
@@ -610,7 +680,7 @@ impl SeexUi {
             ))
             .child(target_row);
 
-        if target != "kicad" {
+        if target != "kicad" && target != "cadence" {
             // The fill can be "no colour", so its palette leads with the
             // candidate for that; the stroke always has a colour.
             let no_fill = components::none_color_candidate(

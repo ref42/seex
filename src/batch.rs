@@ -25,6 +25,7 @@ use crate::error::{AppError, Result};
 use crate::lceda::{LcedaClient, SearchItem};
 use crate::lcsc::{LcscClient, LcscProduct};
 use crate::monitor::ExportProgressCallback;
+use crate::step_model::ModelCleanup;
 use crate::util::sanitize_filename;
 
 #[derive(Clone)]
@@ -44,6 +45,8 @@ pub struct BatchOptions {
     pub schematic_stroke_color: [u8; 3],
     /// `None` exports the symbol body with no fill at all.
     pub schematic_fill_color: Option<[u8; 3]>,
+    /// What happens to downloaded 3D models before they are embedded (logo removal).
+    pub models: Arc<ModelCleanup>,
     pub progress: Option<ExportProgressCallback>,
 }
 
@@ -871,6 +874,7 @@ async fn export_merged_components_parallel(
         merged_pcblib_file,
         options.schematic_stroke_color,
         options.schematic_fill_color,
+        &options.models,
         parallel,
         options.append,
         summary,
@@ -1018,6 +1022,7 @@ async fn build_merged_components_parallel(
     merged_pcblib_file: &str,
     schematic_stroke_color: [u8; 3],
     schematic_fill_color: Option<[u8; 3]>,
+    models: &Arc<ModelCleanup>,
     parallel: usize,
     as_records: bool,
     summary: &mut BatchSummary,
@@ -1032,6 +1037,7 @@ async fn build_merged_components_parallel(
         let client = client.clone();
         let semaphore = semaphore.clone();
         let merged_pcblib_file = merged_pcblib_file.clone();
+        let models = Arc::clone(models);
         join_set.spawn(async move {
             let _permit = semaphore
                 .acquire_owned()
@@ -1045,6 +1051,7 @@ async fn build_merged_components_parallel(
                 merged_pcblib_file.as_str(),
                 schematic_stroke_color,
                 schematic_fill_color,
+                &models,
             )
             .await;
             // An append merge only needs the streams, and reducing the part here keeps
@@ -1095,6 +1102,7 @@ async fn build_named_merged_component(
     merged_pcblib_file: &str,
     schematic_stroke_color: [u8; 3],
     schematic_fill_color: Option<[u8; 3]>,
+    models: &ModelCleanup,
 ) -> Result<IndexedMergeArtifacts> {
     let schlib_record = if targets.schlib {
         let symbol_data = named
@@ -1122,7 +1130,7 @@ async fn build_named_merged_component(
         // only needed to build the footprint, and a download takes seconds while the
         // batch has one in flight per parallel part.
         let step_data =
-            load_placed_step_for_pcblib(client, &named.item, &named.step_candidates).await;
+            load_placed_step_for_pcblib(client, &named.item, &named.step_candidates, models).await;
         let footprint_data = named
             .footprint_data
             .as_ref()
@@ -1342,7 +1350,7 @@ async fn export_component(
 
     if targets.pcblib {
         let pcblib_dir = options.output.join("pcblib");
-        export_pcblib(client, &item, &pcblib_dir, options.force).await?;
+        export_pcblib(client, &item, &pcblib_dir, options.force, &options.models).await?;
     }
 
     Ok(ExportedComponent { display_name })
@@ -1485,6 +1493,7 @@ mod tests {
             force: false,
             schematic_stroke_color: [11, 56, 104],
             schematic_fill_color: Some([255, 255, 224]),
+            models: Default::default(),
             progress: None,
         };
 

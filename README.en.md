@@ -5,7 +5,7 @@
 <h1 align="center">SeEx (Seek and Export)</h1>
 
 <p align="center">
-  <strong>Batch export LCSC components in formats supported by Altium Designer (AD) and KiCad.</strong>
+  <strong>Batch export LCSC components in formats supported by Altium Designer (AD), KiCad and Cadence (OrCAD Capture / Allegro).</strong>
 </p>
 
 <p align="center"><a href="README.en.md">English</a> | <a href="README.md">简体中文</a></p>
@@ -38,6 +38,14 @@ The project history, in chronological order:
 - [x] Support batch export.
 - [x] Export multiple components into one merged `schlib` and `pcblib` library.
 
+### Cadence (OrCAD Capture / Allegro)
+
+- [x] Export `Capture` schematic symbols as one `Library XML` file, which Capture turns into an `.olb` with `File > Import > Library XML`.
+- [x] Export `Allegro` footprints as one `SKILL` script per footprint plus a library script: running `skill load("<library>_allegro/<library>.il")` in the Allegro PCB Editor command window builds the `.dra`, `.psm` and `.pad` files in that folder.
+- [x] Export `3D` models (`step`), mapped on the footprints where EasyEDA places them.
+- [x] Standard packages (chip resistors and capacitors, `SOT`, `SOD`, `SOIC`, `QFN`, ...) get `IPC-7352` lands, checked against the manufacturer's; other packages keep the manufacturer's lands with `IPC-7352` silkscreen, assembly and place-bound rules.
+- [x] `seex` runs no Cadence program itself; the import is done in Cadence.
+
 ### Shared Features
 
 - [x] Export metadata in Chinese or English.
@@ -45,6 +53,7 @@ The project history, in chronological order:
 - [x] Add new components to existing libraries exported by `seex`.
 - [x] Customize schematic stroke and fill colors.
 - [x] Export `3D` models independently.
+- [x] Remove the EasyEDA logo (watermark) from `3D` models by default and rebuild them; a model the logo cannot be removed from safely is exported as it is and named in the export result.
 
 ## Supported EDA Versions
 
@@ -53,13 +62,14 @@ The project history, in chronological order:
 
 - [x] `KiCad 9.0` to `Latest`
 - [x] `Altium Designer 23.x` to `Latest`
+- [x] `Cadence SPB 26.1` (OrCAD X Capture / Allegro X); the Allegro footprint scripts need a release that runs `SKILL` (`Allegro PCB Designer` or `OrCAD PCB Designer Professional`)
 
 ## What Is Planned?
 
-- [ ] Support more `EDA` tools, such as `allegro` and `pads`.
+- [ ] Support more `EDA` tools, such as `pads`.
 - [ ] Continue improving the current workflow and fix more hidden `bugs`.
 - [ ] Keep improving interactions and usability, refine the icons, and try new design languages.
-- [ ] Explore a broadly applicable way to remove or hide parts of `3D` models, such as specific markings.
+- [ ] Explore a broadly applicable way to remove or hide parts of `3D` models, such as specific markings (the EasyEDA logo is already removed by default).
 
 ## Who Would SeEx Like to Contribute?
 
