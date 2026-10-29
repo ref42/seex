@@ -1229,12 +1229,10 @@ procedure( seex_drill(d plated)
 
 procedure( seex_slot(w h plated)
   let( (drill)
-    drill = car(errset(make_axlPadStackDrill(?drillDiameter seex_u(min(w h))
-                                             ?holeType 'OVAL_SLOT
+    ;; No ?drillDiameter: Allegro sizes the slot from it and ignores ?slotSize.
+    drill = car(errset(make_axlPadStackDrill(?holeType 'OVAL_SLOT
                                              ?slotSize list(seex_u(w) seex_u(h))
-                                             ?plating if(plated 'PLATED 'NON_PLATED)
-                                             ?figure 'OBLONG
-                                             ?figureSize list(seex_u(w) seex_u(h))) nil))
+                                             ?plating if(plated 'PLATED 'NON_PLATED)) nil))
     unless( drill
       printf("SeEx: WARNING slot %gx%g mm not supported here; using a round drill - edit the padstack\n" w h)
       seex_errors = seex_errors + 1
