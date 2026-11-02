@@ -47,8 +47,10 @@ const LOGO_LETTERS: [(usize, usize); 8] = [
     (21, 19),
     (22, 14),
 ];
-/// Letters of the separate "LCEDA" row (another font).
-const ROW_LETTERS: [(usize, usize); 6] = [(6, 0), (10, 4), (10, 8), (11, 1), (12, 0), (14, 2)];
+/// Letters of the separate "LCEDA" row (another font). The "A" comes as (14, 2),
+/// (11, 1) or, on some models (C5832391), (13, 2).
+const ROW_LETTERS: [(usize, usize); 7] =
+    [(6, 0), (10, 4), (10, 8), (11, 1), (12, 0), (13, 2), (14, 2)];
 /// Shapes every "LCEDA" row contains (L, C, E, D).
 const ROW_REQUIRED: [(usize, usize); 4] = [(6, 0), (10, 8), (12, 0), (10, 4)];
 
@@ -117,6 +119,28 @@ fn remove_logo(data: &[u8]) -> Result<(Vec<u8>, LogoRemoval), LogoOutcome> {
     let mut dead: HashSet<u64> = HashSet::new();
     let mut loops: Vec<(u64, u64)> = Vec::new();
     let mut removal = LogoRemoval::default();
+    // Some models (C496552) make every letter a solid of its own standing on the
+    // body: the face a letter was found from is that solid's own floor, and the
+    // letter plus its floor are a whole closed shell. Such a letter goes with its
+    // solid; cutting the floor's loop would leave an open shell.
+    let mut shell_of_face: HashMap<u64, u64> = HashMap::new();
+    let mut solid_of_shell: HashMap<u64, u64> = HashMap::new();
+    for entity in &model.entities {
+        match entity.kind.as_str() {
+            "CLOSED_SHELL" => {
+                for &face in &entity.refs {
+                    shell_of_face.insert(face, entity.id);
+                }
+            }
+            "MANIFOLD_SOLID_BREP" => {
+                if let Some(&shell) = entity.refs.first() {
+                    solid_of_shell.insert(shell, entity.id);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut letter_solids: Vec<(Point, Point)> = Vec::new();
     for &index in &selected {
         let piece = &pieces[index];
         removal.pieces += 1;
@@ -126,7 +150,41 @@ fn remove_logo(data: &[u8]) -> Result<(Vec<u8>, LogoRemoval), LogoOutcome> {
             dead.insert(solid);
             dead.extend(model.refs(solid));
         }
-        loops.extend(piece.loops.iter().copied());
+        let floors: HashSet<u64> = piece.loops.iter().map(|&(face, _)| face).collect();
+        let own_solid = piece.solid.is_none().then(|| {
+            floors.iter().find_map(|floor| {
+                let shell = *shell_of_face.get(floor)?;
+                let faces = model.refs(shell);
+                let whole = faces
+                    .iter()
+                    .all(|f| piece.faces.contains(f) || floors.contains(f));
+                if !whole {
+                    return None;
+                }
+                Some((*solid_of_shell.get(&shell)?, faces))
+            })
+        });
+        match own_solid.flatten() {
+            Some((solid, faces)) => {
+                dead.insert(solid);
+                dead.extend(model.refs(solid));
+                dead.extend(faces);
+                letter_solids.push((piece.lo, piece.hi));
+            }
+            None => loops.extend(piece.loops.iter().copied()),
+        }
+    }
+    // The rest of such a logo: letters whose floor has no inner loop are never
+    // found as pieces, but they are small solids standing in the same strip.
+    for solid in logo_solid_neighbours(&model, &geometry, &letter_solids, &dead) {
+        removal.pieces += 1;
+        dead.insert(solid);
+        for shell in model.refs(solid) {
+            let faces = model.refs(shell);
+            removal.faces += faces.len();
+            dead.extend(faces);
+            dead.insert(shell);
+        }
     }
     // Letters that straddle the seam of a split face (round bodies) are part of
     // its outline rather than holes in it, so they cannot be cut out: give what
@@ -1049,6 +1107,72 @@ fn select_words(pieces: &[Piece]) -> Vec<usize> {
         }
     }
     Vec::new()
+}
+
+/// Solids that belong to a logo made of letter solids: once two or more of its
+/// letters were recognised (`letters`, their bounds), every other small solid
+/// standing in the same strip (as thin along the strip's normal, inside its
+/// extent widened by a letter height, no larger than the largest letter) is a
+/// letter too. The largest solid, the body, is never one.
+fn logo_solid_neighbours(
+    model: &Model,
+    geometry: &Geometry,
+    letters: &[(Point, Point)],
+    dead: &HashSet<u64>,
+) -> Vec<u64> {
+    if letters.len() < 2 {
+        return Vec::new();
+    }
+    let (mut lo, mut hi) = letters[0];
+    let mut largest: f64 = 0.0;
+    for &(l, h) in letters {
+        for a in 0..3 {
+            lo[a] = lo[a].min(l[a]);
+            hi[a] = hi[a].max(h[a]);
+        }
+        largest = largest.max((0..3).map(|a| h[a] - l[a]).fold(0.0, f64::max));
+    }
+    // The strip's normal: the axis the letters are thinnest along together.
+    let axis = (0..3)
+        .min_by(|&a, &b| (hi[a] - lo[a]).total_cmp(&(hi[b] - lo[b])))
+        .unwrap_or(2);
+    if hi[axis] - lo[axis] > MAX_RELIEF_MM + PLANE_TOLERANCE_MM {
+        return Vec::new();
+    }
+    let mut solids: Vec<(u64, usize, Point, Point)> = Vec::new();
+    for entity in &model.entities {
+        if entity.kind != "MANIFOLD_SOLID_BREP" {
+            continue;
+        }
+        let faces: HashSet<u64> = entity
+            .refs
+            .iter()
+            .flat_map(|&shell| model.refs(shell))
+            .collect();
+        if let Some((l, h)) = bounds(&geometry.face_points(&faces)) {
+            solids.push((entity.id, faces.len(), l, h));
+        }
+    }
+    let volume = |l: Point, h: Point| (0..3).map(|a| (h[a] - l[a]).max(0.0)).product::<f64>();
+    let body = solids
+        .iter()
+        .max_by(|a, b| volume(a.2, a.3).total_cmp(&volume(b.2, b.3)))
+        .map(|s| s.0);
+    let margin = largest;
+    solids
+        .into_iter()
+        .filter(|&(id, _, l, h)| {
+            Some(id) != body
+                && !dead.contains(&id)
+                && (0..3).map(|a| h[a] - l[a]).fold(0.0, f64::max) <= largest * 1.2
+                && l[axis] >= lo[axis] - PLANE_TOLERANCE_MM
+                && h[axis] <= hi[axis] + PLANE_TOLERANCE_MM
+                && (0..3)
+                    .filter(|&a| a != axis)
+                    .all(|a| l[a] >= lo[a] - margin && h[a] <= hi[a] + margin)
+        })
+        .map(|(id, ..)| id)
+        .collect()
 }
 
 /// Indices of the pieces that make up the logo.
