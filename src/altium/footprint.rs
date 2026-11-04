@@ -434,15 +434,24 @@ pub fn build_pcblib_from_payload_with_model(
     let mut pad_shape_regions = Vec::new();
     let mut custom_copper_regions = Vec::new();
     let mut custom_mask_regions = Vec::new();
-    // Solder mask expansions are recorded per custom pad copper region, because that is
-    // the object Altium reads them from (see `custom_mask_expansions` usage below).
+    // Keep the owning pad and its copper-region mask metadata in agreement.
     let mut custom_mask_expansions = Vec::new();
 
     for pad_raw in pads {
         let hole_mm = easy_units_to_mm(pad_raw.hole);
         let is_custom_poly =
             hole_mm <= 0.000_001 && pad_raw.custom_polygon && pad_raw.polygon_points.is_some();
-        let needs_custom_mask = hole_mm <= 0.000_001 && pad_raw.custom_polygon;
+        // A linked solder-layer contour overrides expansion with an explicit
+        // mask shape. Native custom pads must derive their opening from copper.
+        let needs_custom_mask = hole_mm <= 0.000_001 && pad_raw.custom_polygon && !is_custom_poly;
+        let solder_expansion_mils = if is_custom_poly {
+            pad_raw
+                .custom_mask_expansion_units
+                .unwrap_or(DEFAULT_PAD_SOLDER_MASK_EXPANSION_MIL)
+        } else {
+            DEFAULT_PAD_SOLDER_MASK_EXPANSION_MIL
+        };
+        let solder_expansion_raw = raw_from_mils(solder_expansion_mils);
         let (anchor, diameter) = if is_custom_poly {
             custom_pad_anchor(
                 pad_raw.polygon_points.as_deref().unwrap(),
@@ -479,11 +488,7 @@ pub fn build_pcblib_from_payload_with_model(
             height,
             rotation,
             shape,
-            if is_custom_poly {
-                0
-            } else {
-                raw_from_mils(DEFAULT_PAD_SOLDER_MASK_EXPANSION_MIL)
-            },
+            solder_expansion_raw,
         );
 
         if let Some(region_outline) = pad_outline_region(&pad_raw) {
@@ -528,11 +533,7 @@ pub fn build_pcblib_from_payload_with_model(
                 });
                 // The region belongs to the preceding pad through its native PADINDEX.
                 // Mask expansion metadata still references the copper region primitive.
-                custom_mask_expansions.push(
-                    pad_raw
-                        .custom_mask_expansion_units
-                        .unwrap_or(CUSTOM_PAD_HOTSPOT_UNITS),
-                );
+                custom_mask_expansions.push(solder_expansion_raw);
             }
             if needs_custom_mask {
                 for (mask_layer, v7_layer_name) in mask_region_layers(pad_raw.layer_code, hole_mm) {
@@ -547,15 +548,7 @@ pub fn build_pcblib_from_payload_with_model(
                         is_tenting_top: false,
                         is_tenting_bottom: false,
                         is_keepout: false,
-                        additional_params: if is_custom_poly {
-                            custom_pad_region_params(
-                                v7_layer_name,
-                                component.pads.len(),
-                                &region_outline,
-                            )
-                        } else {
-                            pad_shape_region_params(v7_layer_name)
-                        },
+                        additional_params: pad_shape_region_params(v7_layer_name),
                     });
                 }
             }
@@ -652,16 +645,12 @@ pub fn build_pcblib_from_payload_with_model(
     component.regions.extend(pad_shape_regions);
     component.regions.extend(custom_copper_regions);
     component.regions.extend(custom_mask_regions);
-    for (offset, expansion_units) in custom_mask_expansions.into_iter().enumerate() {
+    for (offset, expansion_raw) in custom_mask_expansions.into_iter().enumerate() {
         component
             .extended_primitive_information
             .push(PcbExtendedPrimitiveInfo {
-                // Altium derives a solder mask opening from extended primitive information
-                // only when it is attached to a copper object: its own libraries place the
-                // custom pad shape region on the copper layer and mark it with `TYPE=Mask`
-                // plus the mask expansion. Pointing this entry at the mask layer region
-                // instead leaves every polygon pad without a usable mask opening, because
-                // that region only reproduces the copper outline with no expansion.
+                // Apply expansion to the full copper contour, using the same
+                // value and precision as the owning pad's manual expansion.
                 primitive_index: custom_copper_region_start + offset,
                 object_name: "Region".to_string(),
                 params: vec![
@@ -669,7 +658,7 @@ pub fn build_pcblib_from_payload_with_model(
                     ("SOLDERMASKEXPANSIONMODE".to_string(), "Manual".to_string()),
                     (
                         "SOLDERMASKEXPANSION_MANUAL".to_string(),
-                        format!("{expansion_units:.3}mil"),
+                        format!("{:.4}mil", f64::from(expansion_raw) / RAW_PER_MIL),
                     ),
                     ("PASTEMASKEXPANSIONMODE".to_string(), "None".to_string()),
                 ],
@@ -2034,7 +2023,10 @@ mod tests {
             .filter(|region| region.layer == LAYER_TOP_SOLDER)
             .collect();
         assert_eq!(copper_regions.len(), 5);
-        assert_eq!(mask_regions.len(), 5);
+        assert!(
+            mask_regions.is_empty(),
+            "explicit mask shapes would override expansion"
+        );
 
         let region_primitive_start =
             component.pads.len() + component.tracks.len() + component.arcs.len();
@@ -2055,17 +2047,23 @@ mod tests {
             );
             assert!(info.params.contains(&(
                 "SOLDERMASKEXPANSION_MANUAL".to_string(),
-                "1.968mil".to_string()
+                "1.9685mil".to_string()
             )));
             assert!(
                 info.params
                     .contains(&("PASTEMASKEXPANSIONMODE".to_string(), "None".to_string()))
             );
-            // Every irregular pad keeps an explicit opening region as a fallback.
-            assert!(
-                mask_regions
-                    .iter()
-                    .any(|mask| mask.outline == region.outline)
+            let pad_index: usize = region
+                .additional_params
+                .iter()
+                .find(|(key, _)| key == "PADINDEX")
+                .unwrap()
+                .1
+                .parse()
+                .unwrap();
+            assert_eq!(
+                component.pads[pad_index - 1].solder_mask_expansion_raw,
+                19_685
             );
         }
     }
@@ -2150,7 +2148,7 @@ mod tests {
     }
 
     #[test]
-    fn exports_poly_pad_as_hotspot_with_shape_regions() {
+    fn exports_poly_pad_with_native_copper_and_generated_mask() {
         let payload = json!({"result": {"dataStr": r#"["DOCTYPE","FOOTPRINT","1.8"]
 ["PAD","e1",0,"",1,"20",-39.37,61.39,0,null,["POLY",[-45.315,76.467,"L",-45.315,51.985,-37.945,44.948,-33.474,44.863,-33.419,76.471,-45.315,76.467]],[],0.003,-0.003,90,1,0,1.9689999999999999,1.9689999999999999,0,0,0]"#}});
         let library =
@@ -2158,7 +2156,7 @@ mod tests {
         let component = &library.components[0];
         assert_eq!(component.pads.len(), 1);
         assert_eq!(component.pads[0].shape_top, PAD_SHAPE_ROUND);
-        assert_eq!(component.regions.len(), 3);
+        assert_eq!(component.regions.len(), 2);
         assert!(
             component
                 .regions
@@ -2492,11 +2490,16 @@ mod custom_pad_tests {
 
     // Decode the exported binary independently of the in-memory region model.
     // This checks the actual ownership and editable geometry Altium receives.
-    fn assert_native_custom_regions(data: &[u8], expected_owners: &[(&str, u8)]) {
+    fn assert_native_custom_regions(
+        data: &[u8],
+        expected_owners: &[(&str, u8)],
+        expected_solder_expansion: i32,
+    ) {
         let u32_at = |offset| u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap());
         let end_block = |offset| offset + 4 + (u32_at(offset) & 0x00ff_ffff) as usize;
         let mut offset = end_block(0);
         let mut pads = Vec::new();
+        let mut pad_masks = Vec::new();
         let mut owners = Vec::new();
         while offset < data.len() {
             let kind = data[offset];
@@ -2504,9 +2507,22 @@ mod custom_pad_tests {
             if kind == 2 {
                 let length = usize::from(data[offset + 4]);
                 pads.push(std::str::from_utf8(&data[offset + 5..offset + 5 + length]).unwrap());
+                let mut geometry = offset;
+                for _ in 0..4 {
+                    geometry = end_block(geometry);
+                }
+                let payload = geometry + 4;
+                pad_masks.push((
+                    i32::from_le_bytes(data[payload + 90..payload + 94].try_into().unwrap()),
+                    data[payload + 102],
+                ));
             } else if kind == 11 {
                 let payload = offset + 4;
                 let layer = data[payload];
+                assert!(
+                    ![LAYER_TOP_SOLDER, LAYER_BOTTOM_SOLDER].contains(&layer),
+                    "an explicit solder contour would override the pad's manual expansion"
+                );
                 let params_start = payload + 22;
                 let params_end = params_start + u32_at(payload + 18) as usize;
                 let text = std::str::from_utf8(&data[params_start..params_end]).unwrap();
@@ -2519,6 +2535,11 @@ mod custom_pad_tests {
                     let index: usize = index.parse().unwrap();
                     assert!(index > 0 && index <= pads.len());
                     owners.push((pads[index - 1], layer));
+                    assert_eq!(
+                        pad_masks[index - 1],
+                        (expected_solder_expansion, 2),
+                        "native custom pads must store manual solder-mask expansion"
+                    );
                     assert_eq!(params["ISSHAPEBASED"], "TRUE");
                     assert!(
                         !params.contains_key("NET"),
@@ -2580,9 +2601,22 @@ mod custom_pad_tests {
             component
                 .regions
                 .iter()
-                .any(|r| r.layer == LAYER_TOP_SOLDER && r.outline == copper.outline)
+                .all(|r| r.layer != LAYER_TOP_SOLDER)
+        );
+        assert_eq!(pad.solder_mask_expansion_raw, 19_690);
+        assert_eq!(
+            pad.solder_mask_expansion_raw,
+            component.pads[0].solder_mask_expansion_raw
         );
         assert_eq!(component.extended_primitive_information.len(), 1);
+        assert!(
+            component.extended_primitive_information[0]
+                .params
+                .contains(&(
+                    "SOLDERMASKEXPANSION_MANUAL".to_string(),
+                    "1.9690mil".to_string()
+                ))
+        );
         assert_eq!(
             component.pads[0].size_top,
             coord_from_easy_units(24.0, 10.0)
@@ -2590,7 +2624,7 @@ mod custom_pad_tests {
         // Confirm the number is present in the actual serialized pad records.
         let records = crate::altium::merge::pcblib_records_from_library(&library).unwrap();
         let data = &records.components[0].data;
-        assert_native_custom_regions(data, &[("2", LAYER_TOP), ("2", LAYER_TOP_SOLDER)]);
+        assert_native_custom_regions(data, &[("2", LAYER_TOP)], 19_690);
         let skip_block = |offset: usize| {
             offset
                 + 4
@@ -2623,12 +2657,23 @@ mod custom_pad_tests {
         let mut rows = [rows[2].clone(), rows[0].clone(), rows[1].clone()];
         rows[2][4] = json!(2);
         rows[2][5] = json!("TAB");
+        rows[2].as_array_mut().unwrap().resize(19, Value::Null);
+        rows[2][17] = json!(3.25);
         let payload = json!({"result":{"dataStr":rows.iter().map(Value::to_string).collect::<Vec<_>>().join("\n")}});
         let library = build_pcblib_from_payload(&payload, "BOTTOM-TAB", None).unwrap();
+        assert!(
+            library.components[0].extended_primitive_information[0]
+                .params
+                .contains(&(
+                    "SOLDERMASKEXPANSION_MANUAL".to_string(),
+                    "3.2500mil".to_string()
+                ))
+        );
         let records = crate::altium::merge::pcblib_records_from_library(&library).unwrap();
         assert_native_custom_regions(
             &records.components[0].data,
-            &[("TAB", LAYER_BOTTOM), ("TAB", LAYER_BOTTOM_SOLDER)],
+            &[("TAB", LAYER_BOTTOM)],
+            32_500,
         );
     }
 
@@ -2640,11 +2685,8 @@ mod custom_pad_tests {
         .unwrap();
         let library = build_pcblib_from_payload(&payload, "QFN-custom-pads", None).unwrap();
         let records = crate::altium::merge::pcblib_records_from_library(&library).unwrap();
-        let expected: Vec<_> = [LAYER_TOP, LAYER_TOP_SOLDER]
-            .into_iter()
-            .flat_map(|layer| ["1", "15", "7", "9", "6"].map(|name| (name, layer)))
-            .collect();
-        assert_native_custom_regions(&records.components[0].data, &expected);
+        let expected = ["1", "15", "7", "9", "6"].map(|name| (name, LAYER_TOP));
+        assert_native_custom_regions(&records.components[0].data, &expected, 19_685);
     }
 
     #[test]
