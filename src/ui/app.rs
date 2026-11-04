@@ -1028,13 +1028,13 @@ impl SeexUi {
                     .min_w(px(0.0))
                     .overflow_x_scroll()
                     .child(self.nav_item(Page::Monitor, locale::t("Monitor", "监听"), cx))
-                    .child(self.nav_item(Page::Libraries, locale::t("Libraries", "库管理"), cx))
                     .child(self.nav_item(Page::Export, locale::t("Export", "导出"), cx))
                     .child(self.nav_item(
                         Page::Font,
                         locale::t("Language & Font", "语言与字体"),
                         cx,
                     ))
+                    .child(self.nav_item(Page::Libraries, locale::t("Libraries", "库管理"), cx))
                     .child(self.nav_item(Page::More, locale::t("More", "更多"), cx)),
             )
             .child(self.pin_toggle(cx))
