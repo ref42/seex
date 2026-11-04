@@ -245,3 +245,33 @@ cargo build --release
 ## 版权声明
 
 `Altium`、`Altium Designer` 是 Altium Limited 的商标；`Cadence`、`OrCAD`、`Allegro` 是 Cadence Design Systems, Inc. 的商标；`立创商城`、`立创EDA`、`嘉立创` 是深圳嘉立创科技集团股份有限公司的商标。`KiCad` 是 KiCad 项目及其开发者社区的名称与标识，代码以 GPL 发布。本项目与上述公司及项目均无隶属或关联关系，相关名称仅用于说明兼容性。
+
+
+### Offline library tools
+
+The **Libraries / 库管理** tab inspects `.SchLib`, `.PcbLib`, `.kicad_sym`, and
+`.kicad_mod` files without contacting upstream services. It lists available
+component names, IDs, descriptions, properties, and geometry/model counts.
+Missing IDs are reported as unavailable; homemade parts do not need an LCSC ID.
+
+**Merge libraries** reads the libraries directly inside the selected folder.
+Use separate input folders for Altium and KiCad. KiCad inputs may include modern
+symbol libraries, `.pretty` folders, and `.3dshapes` folders. Choose a new output
+base name; existing outputs and source files are protected. Identical records
+are deduplicated; conflicting names or model IDs stop the operation. KiCad
+footprint and included model references are updated to the new library names.
+Unresolved external references remain external. Altium files containing streams
+or metadata that the writer cannot preserve are rejected before output is
+published; this includes some vendor extensions and schematic image storage.
+Legacy KiCad `.lib`/`.mod`, Altium integrated libraries, and format conversion
+are not supported by this tool.
+
+Clipboard monitoring can be paused on the Monitor page. Resuming skips the
+current clipboard contents and captures subsequent changes. Manual import works
+while monitoring is paused. Quick ID and Full Info matching are always enabled.
+
+BOM CSV uses UTF-8 with a BOM, CRLF rows, quoted text, and formula-safe spreadsheet
+cells. Columns include LCSC ID, quantity (initially 1), MPN, manufacturer,
+description, package, datasheet/component links, capture count, first/last seen,
+and metadata status. Capture count is kept separate from required BOM quantity;
+edit quantities for your design. Raw clipboard contents are excluded.

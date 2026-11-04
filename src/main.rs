@@ -19,6 +19,7 @@ mod kicad;
 mod lceda;
 mod lcsc;
 mod metadata;
+mod library_tools;
 mod monitor;
 mod progress;
 mod step_logo;
@@ -29,3 +30,6 @@ mod util;
 fn main() {
     ui::run();
 }
+
+#[cfg(test)]
+mod library_tests;

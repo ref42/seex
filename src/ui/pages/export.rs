@@ -729,7 +729,11 @@ impl SeexUi {
                         "Export directory:",
                         "导出目录:",
                     )))
-                    .child(div().flex_1().child(Input::new(&path_input).h(px(30.0))))
+                    .child(
+                        div()
+                            .flex_1()
+                            .child(Input::new(&path_input).text_size(px(20.0)).h(px(38.0))),
+                    )
                     .child(components::button(
                         "browse-export-dir",
                         locale::t("Browse", "浏览"),
@@ -754,7 +758,7 @@ impl SeexUi {
                     .child(
                         div()
                             .w(px(320.0))
-                            .child(Input::new(&library_input).h(px(30.0))),
+                            .child(Input::new(&library_input).text_size(px(20.0)).h(px(38.0))),
                     )
                     .child(
                         div()

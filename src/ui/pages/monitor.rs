@@ -42,36 +42,24 @@ impl SeexUi {
     }
 
     fn match_modes(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        div()
-            .flex()
-            .flex_row()
-            .flex_wrap()
-            .items_center()
-            .gap(px(12.0))
-            .text_size(px(BODY))
-            .text_color(theme::text_color())
-            .child(locale::t("Match mode:", "匹配模式:"))
-            .child(components::selectable(
-                "match-quick",
-                locale::t("Quick ID", "快速 ID"),
-                self.match_quick,
-                cx.listener(|this, _event: &ClickEvent, _window, cx| {
-                    this.match_quick = !this.match_quick;
-                    this.set_keyword_from_modes();
-                    cx.notify();
-                }),
-            ))
-            .child(components::selectable(
-                "match-full",
-                locale::t("Full Info", "完整信息"),
-                self.match_full,
-                cx.listener(|this, _event: &ClickEvent, _window, cx| {
-                    this.match_full = !this.match_full;
-                    this.set_keyword_from_modes();
-                    cx.notify();
-                }),
-            ))
-            .into_any_element()
+        let monitoring = self
+            .state
+            .lock()
+            .map(|state| state.monitoring)
+            .unwrap_or(false);
+        components::selectable(
+            "monitoring-toggle",
+            locale::t("Clipboard monitoring", "剪贴板监控"),
+            monitoring,
+            cx.listener(|this, _event: &ClickEvent, _window, cx| {
+                if let Ok(mut state) = this.state.lock() {
+                    let enabled = !state.monitoring;
+                    state.set_monitoring(enabled);
+                }
+                cx.notify();
+            }),
+        )
+        .into_any_element()
     }
 
     fn import_and_export_row(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
@@ -178,8 +166,8 @@ impl SeexUi {
                         .child(components::section_header(
                             locale::t("Export files", "导出文件"),
                             locale::t(
-                                "BOM CSV for component keeping.",
-                                "用于元件管理的 BOM CSV 文件。",
+                                "UTF-8 CSV with metadata and capture counts. Quantity starts at 1.",
+                                "UTF-8 CSV，含元数据和采集次数。数量默认为 1。",
                             ),
                         ))
                         .child(components::button(
@@ -202,7 +190,11 @@ impl SeexUi {
                             "BOM CSV file:",
                             "BOM CSV 文件:",
                         )))
-                        .child(div().flex_1().child(Input::new(&path_input).h(px(30.0)))),
+                        .child(
+                            div()
+                                .flex_1()
+                                .child(Input::new(&path_input).text_size(px(20.0)).h(px(38.0))),
+                        ),
                 )
                 .child(
                     div()

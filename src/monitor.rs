@@ -45,6 +45,7 @@ pub struct MonitorState {
     pub keyword: String,
     pub initialized: bool,
     pub monitoring: bool,
+    resume_pending: bool,
     pub match_debug_log: Vec<String>,
     pub export_target: String,
     pub export_output_path: String,
@@ -78,6 +79,7 @@ impl MonitorState {
             keyword: String::new(),
             initialized: false,
             monitoring: true,
+            resume_pending: false,
             match_debug_log: Vec::new(),
             export_target: "altium".to_string(),
             export_output_path: "export_export".to_string(),
@@ -152,11 +154,24 @@ impl MonitorState {
         }
     }
 
+    pub fn set_monitoring(&mut self, enabled: bool) {
+        if enabled && !self.monitoring {
+            self.resume_pending = true;
+        }
+        self.monitoring = enabled;
+    }
+
     pub fn process_clipboard_change(&mut self, content: String) -> bool {
         if !self.monitoring {
             return false;
         }
 
+        if self.resume_pending {
+            self.resume_pending = false;
+            self.last_content = content.trim().to_owned();
+            self.initialized = true;
+            return false;
+        }
         let trimmed = content.trim().to_string();
         if trimmed.is_empty() {
             return false;
@@ -433,13 +448,19 @@ impl MonitorHandle {
                     }
                 }
 
+                // Hold the lock through the read so switching monitoring off
+                // guarantees that no subsequent polling read can start.
+                let Ok(mut monitor) = state_poll.lock() else {
+                    continue;
+                };
+                if !monitor.monitoring {
+                    continue;
+                }
                 if let Some(ref mut clip) = clipboard {
                     match clip.get_text() {
                         Ok(content) => {
                             consecutive_errors = 0;
-                            if let Ok(mut s) = state_poll.lock() {
-                                s.process_clipboard_change(content);
-                            }
+                            monitor.process_clipboard_change(content);
                         }
                         Err(_) => {
                             consecutive_errors += 1;

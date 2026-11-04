@@ -13,7 +13,7 @@ use crate::error::{AppError, Result};
 
 const PCBLIB_LIBRARY_DATA_TEMPLATE: &str = include_str!("pcblib_library_data_template.txt");
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct SchlibRecord {
     pub(crate) name: String,
     pub(crate) description: String,
@@ -23,7 +23,7 @@ pub(crate) struct SchlibRecord {
     pub(crate) data: Vec<u8>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct PcblibComponentRecord {
     pub(crate) name: String,
     pub(crate) primitive_count: i32,
@@ -45,6 +45,282 @@ pub(crate) struct PcblibModelRecord {
 pub(crate) struct PcblibRecordLibrary {
     pub(crate) components: Vec<PcblibComponentRecord>,
     pub(crate) models: Vec<PcblibModelRecord>,
+}
+
+/// Summary returned by [`merge_library_directory`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DirectoryMergeSummary {
+    pub schlib_files: usize,
+    pub pcblib_files: usize,
+    pub schlib_components: usize,
+    pub pcblib_components: usize,
+    pub outputs: Vec<PathBuf>,
+}
+
+pub fn directory_has_libraries(input_dir: &Path) -> Result<bool> {
+    if !input_dir.is_dir() {
+        return Err(AppError::Other(format!(
+            "merge input is not a directory: {}",
+            input_dir.display()
+        )));
+    }
+    for entry in fs::read_dir(input_dir)? {
+        let path = entry?.path();
+        if !path.is_file() {
+            continue;
+        }
+        let Some(extension) = path.extension().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        if extension.eq_ignore_ascii_case("SchLib") || extension.eq_ignore_ascii_case("PcbLib") {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Merge the Altium libraries directly inside `input_dir` into one library set.
+///
+/// The output is a base path: `output_base` becomes `<base>.SchLib` and/or
+/// `<base>.PcbLib`, depending on which input file types are present. Files are
+/// read completely before either output is written. The requested outputs are
+/// excluded from discovery; identical records from previous merges are kept once.
+pub fn merge_library_directory(
+    input_dir: &Path,
+    output_base: &Path,
+    force: bool,
+) -> Result<DirectoryMergeSummary> {
+    if !input_dir.is_dir() {
+        return Err(AppError::Other(format!(
+            "merge input is not a directory: {}",
+            input_dir.display()
+        )));
+    }
+
+    let schlib_path = output_with_extension(output_base, "SchLib");
+    let pcblib_path = output_with_extension(output_base, "PcbLib");
+    let destinations = [&schlib_path, &pcblib_path]
+        .into_iter()
+        .filter(|path| path.exists())
+        .map(fs::canonicalize)
+        .collect::<std::io::Result<Vec<_>>>()?;
+    let mut schlib_paths = Vec::new();
+    let mut pcblib_paths = Vec::new();
+    for entry in fs::read_dir(input_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        if destinations.contains(&path.canonicalize()?) {
+            continue;
+        }
+        let Some(extension) = path.extension().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        if extension.eq_ignore_ascii_case("SchLib") {
+            schlib_paths.push(path);
+        } else if extension.eq_ignore_ascii_case("PcbLib") {
+            pcblib_paths.push(path);
+        }
+    }
+    schlib_paths.sort();
+    pcblib_paths.sort();
+
+    if schlib_paths.is_empty() && pcblib_paths.is_empty() {
+        return Err(AppError::Other(format!(
+            "no source .SchLib or .PcbLib files found in {} after excluding output libraries",
+            input_dir.display()
+        )));
+    }
+
+    let existing = [
+        (schlib_paths.is_empty(), &schlib_path),
+        (pcblib_paths.is_empty(), &pcblib_path),
+    ]
+    .into_iter()
+    .filter_map(|(unused, path)| (!unused && path.exists()).then_some(path.display().to_string()))
+    .collect::<Vec<_>>();
+    if !existing.is_empty() {
+        let _ = force;
+        return Err(AppError::Other(format!(
+            "merge output already exists: {}. Choose another output name",
+            existing.join(", ")
+        )));
+    }
+
+    let mut schlib_records = Vec::new();
+    let mut schlib_names = HashMap::new();
+    for path in &schlib_paths {
+        let records = read_schlib_records(path).map_err(|err| {
+            AppError::Other(format!("failed to read SchLib {}: {err}", path.display()))
+        })?;
+        let scratch = temp_path("seex-audit", "SchLib");
+        write_schlib_records(&records, &scratch)?;
+        let audit = audit_preserved_streams(path, &scratch);
+        let _ = fs::remove_file(&scratch);
+        audit?;
+        for record in records {
+            append_unique_record(
+                &mut schlib_records,
+                &mut schlib_names,
+                record.name.clone(),
+                record,
+                path,
+                "SchLib component",
+            )?;
+        }
+    }
+
+    let mut pcblib_library = PcblibRecordLibrary::default();
+    let mut footprint_names = HashMap::new();
+    let mut model_ids: HashMap<String, (usize, PathBuf)> = HashMap::new();
+    for path in &pcblib_paths {
+        let library = read_pcblib_records(path).map_err(|err| {
+            AppError::Other(format!("failed to read PcbLib {}: {err}", path.display()))
+        })?;
+        let scratch = temp_path("seex-audit", "PcbLib");
+        write_pcblib_records(&library, &scratch)?;
+        let audit = audit_preserved_streams(path, &scratch);
+        let _ = fs::remove_file(&scratch);
+        audit?;
+        for component in library.components {
+            append_unique_record(
+                &mut pcblib_library.components,
+                &mut footprint_names,
+                component.name.clone(),
+                component,
+                path,
+                "PcbLib component",
+            )?;
+        }
+        for model in library.models {
+            let pairs = parse_param_pairs(&cstring_text(&model.entry));
+            let id = param_value(&pairs, "ID")
+                .filter(|id| !id.is_empty())
+                .ok_or_else(|| {
+                    AppError::Other(format!("{}: PcbLib model has no ID", path.display()))
+                })?;
+            let key = id.to_ascii_lowercase();
+            if let Some((index, previous_path)) = model_ids.get(&key) {
+                let previous = &pcblib_library.models[*index];
+                // The model table entry carries the stable ID and all placement
+                // metadata. Payload streams are preserved by the first occurrence;
+                // duplicate merged outputs have identical entries.
+                if previous.entry != model.entry
+                    || model_bytes(&previous.stream)? != model_bytes(&model.stream)?
+                {
+                    return Err(AppError::Other(format!(
+                        "conflicting duplicate PcbLib model ID '{id}' in {} and {}",
+                        previous_path.display(),
+                        path.display()
+                    )));
+                }
+            } else {
+                model_ids.insert(key, (pcblib_library.models.len(), path.clone()));
+                pcblib_library.models.push(model);
+            }
+        }
+    }
+
+    if let Some(parent) = output_base
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        fs::create_dir_all(parent)?;
+    }
+    // Build both outputs before publishing either. Hard links create the
+    // destination only when absent, including if another process raced us.
+    let stage = temp_path("seex-library-merge", "stage");
+    fs::create_dir(&stage)?;
+    let mut outputs = Vec::new();
+    let result = (|| -> Result<()> {
+        let mut staged = Vec::new();
+        if !schlib_records.is_empty() {
+            let file = stage.join("merged.SchLib");
+            write_schlib_records(&schlib_records, &file)?;
+            staged.push((file, schlib_path));
+        }
+        if !pcblib_library.components.is_empty() {
+            let file = stage.join("merged.PcbLib");
+            write_pcblib_records(&pcblib_library, &file)?;
+            staged.push((file, pcblib_path));
+        }
+        for (file, destination) in staged {
+            // Copy into the destination filesystem before atomic publication.
+            let sibling = destination.with_extension(format!("seex-stage-{}", std::process::id()));
+            let mut target = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&sibling)?;
+            let copy = std::io::copy(&mut File::open(&file)?, &mut target);
+            drop(target);
+            if let Err(error) = copy {
+                let _ = fs::remove_file(&sibling);
+                return Err(error.into());
+            }
+            let publish = fs::hard_link(&sibling, &destination);
+            let _ = fs::remove_file(&sibling);
+            publish?;
+            outputs.push(destination);
+        }
+        Ok(())
+    })();
+    let _ = fs::remove_dir_all(&stage);
+    if let Err(error) = result {
+        for output in &outputs {
+            let _ = fs::remove_file(output);
+        }
+        return Err(error);
+    }
+
+    Ok(DirectoryMergeSummary {
+        schlib_files: schlib_paths.len(),
+        pcblib_files: pcblib_paths.len(),
+        schlib_components: schlib_records.len(),
+        pcblib_components: pcblib_library.components.len(),
+        outputs,
+    })
+}
+
+fn output_with_extension(base: &Path, extension: &str) -> PathBuf {
+    if base
+        .extension()
+        .and_then(|value| value.to_str())
+        .is_some_and(|value| value.eq_ignore_ascii_case(extension))
+    {
+        base.to_path_buf()
+    } else {
+        base.with_extension(extension)
+    }
+}
+
+fn append_unique_record<T: PartialEq>(
+    records: &mut Vec<T>,
+    seen: &mut HashMap<String, (usize, PathBuf)>,
+    name: String,
+    record: T,
+    source: &Path,
+    kind: &str,
+) -> Result<()> {
+    let key = name.to_ascii_lowercase();
+    if seen.contains_key(&key) {
+        // Equivalent Altium exports can serialize the same component with
+        // different compound-file metadata. The component name is the stable
+        // identity, so retain the first record.
+        let (index, previous) = &seen[&key];
+        if records[*index] != record {
+            return Err(AppError::Other(format!(
+                "Conflicting {kind} '{name}' in {} and {}",
+                previous.display(),
+                source.display()
+            )));
+        }
+    } else {
+        seen.insert(key, (records.len(), source.to_owned()));
+        records.push(record);
+    }
+    Ok(())
 }
 
 pub(crate) fn schlib_record_from_component(component: &Component) -> Result<SchlibRecord> {
@@ -1414,5 +1690,101 @@ mod tests {
             "merged libraries must keep the custom pad mask entries"
         );
         fs::remove_file(path).ok();
+    }
+}
+
+fn model_bytes(model: &ModelData) -> Result<Vec<u8>> {
+    match model {
+        ModelData::Bytes(bytes) => Ok(bytes.clone()),
+        ModelData::Scratch(path) => Ok(fs::read(path)?),
+    }
+}
+
+// Refuse external extensions that the existing exporter cannot preserve. This
+// includes schematic image storage and additional vendor-specific PCB streams.
+fn audit_preserved_streams(source: &Path, roundtrip: &Path) -> Result<()> {
+    let mut original = CompoundFile::open(File::open(source)?)?;
+    let mut generated = CompoundFile::open(File::open(roundtrip)?)?;
+    let paths: Vec<_> = original
+        .walk()
+        .filter(|e| e.is_stream())
+        .map(|e| e.path().to_owned())
+        .collect();
+    for path in paths {
+        if path == Path::new("/SectionKeys") {
+            continue;
+        }
+        let name = path.to_string_lossy();
+        let a = read_stream_bytes(&mut original, &name)?;
+        let b = read_stream_bytes(&mut generated, &name).ok();
+        if b.as_deref() != Some(a.as_slice()) {
+            return Err(AppError::Other(format!(
+                "{}: stream {} cannot be preserved by this merger; no outputs were written",
+                source.display(),
+                name
+            )));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod offline_merge_tests {
+    use super::*;
+    use crate::altium::schlib::{SchlibMetadata, build_component_from_payload_with_metadata};
+    #[test]
+    fn directory_merge_rejects_conflicts_and_preserves_sources() {
+        let root = temp_path("seex-offline-test", "dir");
+        fs::create_dir(&root).unwrap();
+        let payload =
+            serde_json::from_str(include_str!("../../tests/fixtures/easyeda_symbol.json")).unwrap();
+        let component = build_component_from_payload_with_metadata(
+            &payload,
+            "Handmade",
+            &SchlibMetadata::default(),
+        )
+        .unwrap();
+        let record = schlib_record_from_component(&component).unwrap();
+        write_schlib_records(&[record.clone()], &root.join("a.SchLib")).unwrap();
+        write_schlib_records(&[record.clone()], &root.join("b.SchLib")).unwrap();
+        let result = merge_library_directory(&root, &root.join("Merged"), false).unwrap();
+        assert_eq!(result.schlib_components, 1);
+        let extra = root.join("vendor.SchLib");
+        fs::copy(root.join("a.SchLib"), &extra).unwrap();
+        {
+            let file = fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&extra)
+                .unwrap();
+            let mut compound = CompoundFile::open(file).unwrap();
+            compound
+                .create_stream("/VendorData")
+                .unwrap()
+                .write_all(b"custom content")
+                .unwrap();
+            compound.flush().unwrap();
+        }
+        let error =
+            merge_library_directory(&root, &root.join("RejectedVendor"), false).unwrap_err();
+        assert!(error.to_string().contains("cannot be preserved"), "{error}");
+        assert!(!root.join("RejectedVendor.SchLib").exists());
+        fs::remove_file(extra).unwrap();
+
+        let different = build_component_from_payload_with_metadata(
+            &payload,
+            "Handmade",
+            &SchlibMetadata {
+                description: Some("Different handmade part".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let conflict = schlib_record_from_component(&different).unwrap();
+        write_schlib_records(&[conflict], &root.join("b.SchLib")).unwrap();
+        assert!(merge_library_directory(&root, &root.join("Conflict"), false).is_err());
+        assert!(!root.join("Conflict.SchLib").exists());
+        assert!(root.join("a.SchLib").exists());
+        fs::remove_dir_all(root).unwrap();
     }
 }

@@ -245,3 +245,33 @@ This project uses the custom **SeEx Non-Commercial Share-Alike License 1.0**: st
 ## Copyright Notice
 
 `Altium` and `Altium Designer` are trademarks of Altium Limited; `Cadence`, `OrCAD` and `Allegro` are trademarks of Cadence Design Systems, Inc.; `LCSC`, `LCEDA` and `JLC` are trademarks of Shenzhen JLC Technology Group Co., Ltd. `KiCad` is the name and mark of the KiCad project and its developer community, released under the GPL. This project is not affiliated with or endorsed by any of these companies or projects; the names are used only to describe compatibility.
+
+
+### Offline library tools
+
+The **Libraries / 库管理** tab inspects `.SchLib`, `.PcbLib`, `.kicad_sym`, and
+`.kicad_mod` files without contacting upstream services. It lists available
+component names, IDs, descriptions, properties, and geometry/model counts.
+Missing IDs are reported as unavailable; homemade parts do not need an LCSC ID.
+
+**Merge libraries** reads the libraries directly inside the selected folder.
+Use separate input folders for Altium and KiCad. KiCad inputs may include modern
+symbol libraries, `.pretty` folders, and `.3dshapes` folders. Choose a new output
+base name; existing outputs and source files are protected. Identical records
+are deduplicated; conflicting names or model IDs stop the operation. KiCad
+footprint and included model references are updated to the new library names.
+Unresolved external references remain external. Altium files containing streams
+or metadata that the writer cannot preserve are rejected before output is
+published; this includes some vendor extensions and schematic image storage.
+Legacy KiCad `.lib`/`.mod`, Altium integrated libraries, and format conversion
+are not supported by this tool.
+
+Clipboard monitoring can be paused on the Monitor page. Resuming skips the
+current clipboard contents and captures subsequent changes. Manual import works
+while monitoring is paused. Quick ID and Full Info matching are always enabled.
+
+BOM CSV uses UTF-8 with a BOM, CRLF rows, quoted text, and formula-safe spreadsheet
+cells. Columns include LCSC ID, quantity (initially 1), MPN, manufacturer,
+description, package, datasheet/component links, capture count, first/last seen,
+and metadata status. Capture count is kept separate from required BOM quantity;
+edit quantities for your design. Raw clipboard contents are excluded.

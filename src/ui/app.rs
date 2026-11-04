@@ -37,7 +37,7 @@ const UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Page {
     Monitor,
-    History,
+    Libraries,
     Export,
     More,
     Font,
@@ -151,11 +151,9 @@ pub struct SeexUi {
     pub page: Page,
     pub pin_on_top: bool,
     pub show_matched: bool,
-    pub show_history: bool,
-    pub match_quick: bool,
-    pub match_full: bool,
     pub clear_confirm: bool,
     last_theme_check: Instant,
+    pub library_state: Arc<Mutex<crate::ui::pages::libraries::LibraryState>>,
     pub update_state: Arc<Mutex<UpdateState>>,
     /// When the next background update check falls due.
     next_update_check: Instant,
@@ -453,11 +451,9 @@ impl SeexUi {
             page: Page::Monitor,
             pin_on_top: false,
             show_matched: true,
-            show_history: true,
-            match_quick: true,
-            match_full: true,
             clear_confirm: false,
             last_theme_check: Instant::now(),
+            library_state: Default::default(),
             update_state: Arc::new(Mutex::new(UpdateState::default())),
             next_update_check: Instant::now() + UPDATE_CHECK_DELAY,
             show_donate: config.show_donate,
@@ -1009,13 +1005,6 @@ impl SeexUi {
         self.mark_config_dirty();
     }
 
-    pub fn set_keyword_from_modes(&mut self) {
-        let keyword = build_keyword(self.match_quick, self.match_full);
-        if let Ok(mut state) = self.state.lock() {
-            state.set_keyword(keyword);
-        }
-    }
-
     fn top_bar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .flex()
@@ -1030,9 +1019,9 @@ impl SeexUi {
             .border_b(px(1.0))
             .border_color(theme::border())
             .child(self.nav_item(Page::Monitor, locale::t("Monitor", "监听"), cx))
-            .child(self.nav_item(Page::History, locale::t("History", "历史"), cx))
+            .child(self.nav_item(Page::Libraries, locale::t("Libraries", "库管理"), cx))
             .child(self.nav_item(Page::Export, locale::t("Export", "导出"), cx))
-            .child(self.nav_item(Page::Font, locale::t("Font", "字体"), cx))
+            .child(self.nav_item(Page::Font, locale::t("Language & Font", "语言与字体"), cx))
             .child(self.nav_item(Page::More, locale::t("More", "更多"), cx))
             .child(div().flex_1())
             .child(self.pin_toggle(cx))
@@ -1094,7 +1083,7 @@ impl SeexUi {
     fn central(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let page = match self.page {
             Page::Monitor => self.monitor_page(window, cx),
-            Page::History => self.history_page(cx),
+            Page::Libraries => self.libraries_page(cx),
             Page::Export => self.export_page(window, cx),
             Page::More => self.more_page(cx),
             Page::Font => self.font_page(window, cx),

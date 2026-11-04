@@ -33,3 +33,6 @@ pub use workflow::{
     KicadBatchOptions, KicadBatchSummary, KicadExportedComponent, KicadSingleOptions,
     export_kicad_batch, export_kicad_single,
 };
+
+pub mod merge;
+pub(crate) mod sexpr;

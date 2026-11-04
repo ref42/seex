@@ -53,10 +53,16 @@ async fn save_matched_inner(state: Arc<Mutex<MonitorState>>) -> Result<String, S
 
     let metadata = load_bom_metadata(&entries, &language).await;
     write_bom_csv(&path, &entries, &metadata)?;
+    let unavailable = metadata
+        .iter()
+        .filter(|row| row.mpn.is_empty() && row.description.is_empty())
+        .count();
     Ok(format!(
-        "Exported BOM CSV to {} ({})",
+        "Exported BOM CSV to {} ({}; {} rows; metadata unavailable for {})",
         path.display(),
-        metadata_language_label(&language)
+        metadata_language_label(&language),
+        entries.len(),
+        unavailable
     ))
 }
 
@@ -81,7 +87,7 @@ fn write_bom_csv(
         .map_err(|err| err.to_string())?;
     writeln!(
         writer,
-        "lcsc_id,quantity,mpn,manufacturer,description,package,datasheet_url"
+        "lcsc_id,quantity,mpn,manufacturer,description,package,datasheet_url,component_url,capture_count,first_seen,last_seen,metadata_status\r"
     )
     .map_err(|err| err.to_string())?;
     for entry in entries {
@@ -92,14 +98,25 @@ fn write_bom_csv(
             .unwrap_or_else(|| BomRow::from_entry(entry));
         writeln!(
             writer,
-            "{},{},{},{},{},{},{}",
+            "{},1,{},{},{},{},{},{},{},{},{},{}\r",
             csv_field(&entry.lcsc_id),
-            entry.count,
             csv_field(&row.mpn),
             csv_field(&row.manufacturer),
             csv_field(&row.description),
             csv_field(&row.package_name),
             csv_field(&row.datasheet_url),
+            csv_field(&format!(
+                "https://www.lcsc.com/product-detail/{}.html",
+                entry.lcsc_id
+            )),
+            entry.count,
+            csv_field(&entry.first_seen),
+            csv_field(&entry.last_seen),
+            csv_field(if row.mpn.is_empty() && row.description.is_empty() {
+                "unavailable"
+            } else {
+                "available"
+            }),
         )
         .map_err(|err| err.to_string())?;
     }
@@ -219,7 +236,15 @@ fn first_non_empty(values: impl IntoIterator<Item = String>) -> String {
 }
 
 fn csv_field(value: &str) -> String {
-    let escaped = value.replace('"', "\"\"");
+    // Quoting alone does not prevent spreadsheets interpreting formulas.
+    let trimmed = value.trim_start();
+    let safe = if trimmed.starts_with(['=', '+', '-', '@']) || value.starts_with(['\t', '\r', '\n'])
+    {
+        format!("'{value}")
+    } else {
+        value.to_owned()
+    };
+    let escaped = safe.replace('"', "\"\"");
     format!("\"{}\"", escaped)
 }
 
@@ -228,5 +253,44 @@ fn metadata_language_label(language: &str) -> &'static str {
         "English metadata"
     } else {
         "Chinese metadata"
+    }
+}
+
+#[cfg(test)]
+mod csv_tests {
+    use super::*;
+    #[test]
+    fn exported_file_has_bom_and_separates_quantity_from_captures() {
+        let path = std::env::temp_dir().join(format!(
+            "seex-csv-{}-{}.csv",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap()
+        ));
+        let entry = monitor::MatchedEntry {
+            lcsc_id: "C2040".into(),
+            first_seen: "2026-11-04".into(),
+            last_seen: "2026-11-04".into(),
+            count: 7,
+            source_text: "PRIVATE CLIPBOARD".into(),
+        };
+        write_bom_csv(&path, &[entry], &[]).unwrap();
+        let data = std::fs::read(&path).unwrap();
+        assert!(data.starts_with(b"\xEF\xBB\xBF"));
+        let text = std::str::from_utf8(&data[3..]).unwrap();
+        assert!(text.contains("\r\n\"C2040\",1,"));
+        assert!(text.contains(",7,"));
+        assert!(text.contains("unavailable"));
+        assert!(!text.contains("PRIVATE CLIPBOARD"));
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn csv_preserves_unicode_quotes_and_blocks_formulas() {
+        assert_eq!(
+            csv_field("中文,\"quoted\"\nline"),
+            "\"中文,\"\"quoted\"\"\nline\""
+        );
+        assert_eq!(csv_field(" =HYPERLINK(1)"), "\"' =HYPERLINK(1)\"");
+        assert_eq!(csv_field("C2040"), "\"C2040\"");
     }
 }
