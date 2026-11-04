@@ -47,12 +47,27 @@ const LOGO_LETTERS: [(usize, usize); 8] = [
     (21, 19),
     (22, 14),
 ];
-/// Letters of the separate "LCEDA" row (another font). The "A" comes as (14, 2),
-/// (11, 1) or, on some models (C5832391), (13, 2).
-const ROW_LETTERS: [(usize, usize); 7] =
-    [(6, 0), (10, 4), (10, 8), (11, 1), (12, 0), (13, 2), (14, 2)];
-/// Shapes every "LCEDA" row contains (L, C, E, D).
-const ROW_REQUIRED: [(usize, usize); 4] = [(6, 0), (10, 8), (12, 0), (10, 4)];
+/// Letters of the separate "LCEDA" row. It comes in two fonts: in one the "A"
+/// is (14, 2), (11, 1) or, on some models (C5832391), (13, 2); in the other
+/// (pin headers such as C124378) the letters are L (6, 0), C (11, 9), E (12, 0),
+/// D (13, 7) and A (11, 0).
+const ROW_LETTERS: [(usize, usize); 10] = [
+    (6, 0),
+    (10, 4),
+    (10, 8),
+    (11, 0),
+    (11, 1),
+    (11, 9),
+    (12, 0),
+    (13, 2),
+    (13, 7),
+    (14, 2),
+];
+/// Shapes every "LCEDA" row contains (L, C, E, D), one set per font.
+const ROW_REQUIRED: [[(usize, usize); 4]; 2] = [
+    [(6, 0), (10, 8), (12, 0), (10, 4)],
+    [(6, 0), (11, 9), (12, 0), (13, 7)],
+];
 
 /// What [`strip_logo`] took out.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -1238,7 +1253,11 @@ fn select_logo(pieces: &[Piece]) -> Vec<usize> {
         }
         seen.extend(group.iter().copied());
         let shapes: Vec<(usize, usize)> = group.iter().map(|&i| pieces[i].shape).collect();
-        if group.len() == 5 && ROW_REQUIRED.iter().all(|s| shapes.contains(s)) {
+        if group.len() == 5
+            && ROW_REQUIRED
+                .iter()
+                .any(|font| font.iter().all(|s| shapes.contains(s)))
+        {
             chosen.extend(group);
         }
     }
