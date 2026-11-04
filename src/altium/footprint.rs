@@ -520,10 +520,14 @@ pub fn build_pcblib_from_payload_with_model(
                     is_tenting_top: false,
                     is_tenting_bottom: false,
                     is_keepout: false,
-                    additional_params: pad_shape_region_params(copper_layer_name),
+                    additional_params: custom_pad_region_params(
+                        copper_layer_name,
+                        component.pads.len(),
+                        &region_outline,
+                    ),
                 });
-                // A polygon pad has no real pad shape, so its mask opening is described by
-                // the ExtendedPrimitiveInformation entry emitted for this copper region.
+                // The region belongs to the preceding pad through its native PADINDEX.
+                // Mask expansion metadata still references the copper region primitive.
                 custom_mask_expansions.push(
                     pad_raw
                         .custom_mask_expansion_units
@@ -543,7 +547,15 @@ pub fn build_pcblib_from_payload_with_model(
                         is_tenting_top: false,
                         is_tenting_bottom: false,
                         is_keepout: false,
-                        additional_params: pad_shape_region_params(v7_layer_name),
+                        additional_params: if is_custom_poly {
+                            custom_pad_region_params(
+                                v7_layer_name,
+                                component.pads.len(),
+                                &region_outline,
+                            )
+                        } else {
+                            pad_shape_region_params(v7_layer_name)
+                        },
                     });
                 }
             }
@@ -1856,6 +1868,52 @@ fn pad_shape_region_params(v7_layer: &str) -> Vec<(String, String)> {
     ]
 }
 
+/// Native PcbLib custom-pad regions reference the 1-based pad record ordinal,
+/// not the designator or the index among all primitives. The editable contour
+/// accompanies the binary region outline; coordinates are absolute mils.
+fn custom_pad_region_params(
+    v7_layer: &str,
+    pad_index: usize,
+    outline: &[CoordPoint],
+) -> Vec<(String, String)> {
+    let mut params = pad_shape_region_params(v7_layer);
+    params
+        .iter_mut()
+        .find(|(key, _)| key == "ISSHAPEBASED")
+        .unwrap()
+        .1 = "TRUE".to_string();
+    params.push(("KIND".to_string(), "0".to_string()));
+    params.push(("PADINDEX".to_string(), pad_index.to_string()));
+    // Altium closes the editable contour implicitly. Keep the original binary
+    // outline unchanged, including any closing point supplied by the source.
+    let vertices = if outline.len() > 1 && outline.first() == outline.last() {
+        &outline[..outline.len() - 1]
+    } else {
+        outline
+    };
+    params.push((
+        "MAINCONTOURVERTEXCOUNT".to_string(),
+        vertices.len().to_string(),
+    ));
+    for (index, point) in vertices.iter().enumerate() {
+        // Curves have already been tessellated by the source path parser.
+        // Four decimal places preserve the writer's 1/10000 mil resolution.
+        for (key, value) in [
+            ("KIND", "0".to_string()),
+            ("VX", format!("{:.4}mil", f64::from(point.x) / RAW_PER_MIL)),
+            ("VY", format!("{:.4}mil", f64::from(point.y) / RAW_PER_MIL)),
+            ("CX", "0mil".to_string()),
+            ("CY", "0mil".to_string()),
+            ("SA", "0.00000000000000E+0000".to_string()),
+            ("EA", "0.00000000000000E+0000".to_string()),
+            ("R", "0mil".to_string()),
+        ] {
+            params.push((format!("{key}{index}"), value));
+        }
+    }
+    params
+}
+
 fn mask_region_layers(layer_code: i32, hole_mm: f64) -> Vec<(u8, &'static str)> {
     if layer_code == 2 {
         vec![(LAYER_BOTTOM_SOLDER, "BOTTOMSOLDER")]
@@ -2374,7 +2432,7 @@ mod tests {
 }
 
 #[cfg(test)]
-mod custom_pad_label_tests {
+mod custom_pad_tests {
     use super::*;
     use serde_json::json;
 
@@ -2432,6 +2490,64 @@ mod custom_pad_label_tests {
         json!({"result":{"dataStr":rows.iter().map(Value::to_string).collect::<Vec<_>>().join("\n")}})
     }
 
+    // Decode the exported binary independently of the in-memory region model.
+    // This checks the actual ownership and editable geometry Altium receives.
+    fn assert_native_custom_regions(data: &[u8], expected_owners: &[(&str, u8)]) {
+        let u32_at = |offset| u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap());
+        let end_block = |offset| offset + 4 + (u32_at(offset) & 0x00ff_ffff) as usize;
+        let mut offset = end_block(0);
+        let mut pads = Vec::new();
+        let mut owners = Vec::new();
+        while offset < data.len() {
+            let kind = data[offset];
+            offset += 1;
+            if kind == 2 {
+                let length = usize::from(data[offset + 4]);
+                pads.push(std::str::from_utf8(&data[offset + 5..offset + 5 + length]).unwrap());
+            } else if kind == 11 {
+                let payload = offset + 4;
+                let layer = data[payload];
+                let params_start = payload + 22;
+                let params_end = params_start + u32_at(payload + 18) as usize;
+                let text = std::str::from_utf8(&data[params_start..params_end]).unwrap();
+                let params: std::collections::HashMap<_, _> = text
+                    .trim_end_matches('\0')
+                    .split('|')
+                    .filter_map(|pair| pair.split_once('='))
+                    .collect();
+                if let Some(index) = params.get("PADINDEX") {
+                    let index: usize = index.parse().unwrap();
+                    assert!(index > 0 && index <= pads.len());
+                    owners.push((pads[index - 1], layer));
+                    assert_eq!(params["ISSHAPEBASED"], "TRUE");
+                    assert!(
+                        !params.contains_key("NET"),
+                        "a footprint must inherit its board net"
+                    );
+                    let count: usize = params["MAINCONTOURVERTEXCOUNT"].parse().unwrap();
+                    let binary_count = u32_at(params_end) as usize;
+                    assert!(count >= 3 && (binary_count == count || binary_count == count + 1));
+                    for vertex in 0..count {
+                        assert_eq!(params[format!("KIND{vertex}").as_str()], "0");
+                        for (axis, delta) in [("X", 0), ("Y", 8)] {
+                            let pos = params_end + 4 + vertex * 16 + delta;
+                            let binary = f64::from_le_bytes(data[pos..pos + 8].try_into().unwrap());
+                            let token = params[format!("V{axis}{vertex}").as_str()];
+                            let mils: f64 = token.strip_suffix("mil").unwrap().parse().unwrap();
+                            assert!((mils * 10_000.0 - binary).abs() < 0.001);
+                        }
+                    }
+                } else {
+                    assert!(!params.contains_key("MAINCONTOURVERTEXCOUNT"));
+                }
+            }
+            for _ in 0..if kind == 2 { 6 } else { 1 } {
+                offset = end_block(offset);
+            }
+        }
+        assert_eq!(owners, expected_owners);
+    }
+
     #[test]
     fn irregular_pad_has_readable_real_designator_and_unchanged_copper() {
         let library =
@@ -2474,6 +2590,7 @@ mod custom_pad_label_tests {
         // Confirm the number is present in the actual serialized pad records.
         let records = crate::altium::merge::pcblib_records_from_library(&library).unwrap();
         let data = &records.components[0].data;
+        assert_native_custom_regions(data, &[("2", LAYER_TOP), ("2", LAYER_TOP_SOLDER)]);
         let skip_block = |offset: usize| {
             offset
                 + 4
@@ -2490,6 +2607,44 @@ mod custom_pad_label_tests {
                 offset = skip_block(offset);
             }
         }
+    }
+
+    #[test]
+    fn custom_pad_ownership_uses_record_order_on_the_bottom_layer() {
+        let payload = sot89_like_payload();
+        let rows: Vec<Value> = payload["result"]["dataStr"]
+            .as_str()
+            .unwrap()
+            .lines()
+            .map(|row| serde_json::from_str(row).unwrap())
+            .collect();
+        // The third pad record has an alphanumeric designator. Neither the
+        // designator nor its copper-region ordinal can stand in for PADINDEX.
+        let mut rows = [rows[2].clone(), rows[0].clone(), rows[1].clone()];
+        rows[2][4] = json!(2);
+        rows[2][5] = json!("TAB");
+        let payload = json!({"result":{"dataStr":rows.iter().map(Value::to_string).collect::<Vec<_>>().join("\n")}});
+        let library = build_pcblib_from_payload(&payload, "BOTTOM-TAB", None).unwrap();
+        let records = crate::altium::merge::pcblib_records_from_library(&library).unwrap();
+        assert_native_custom_regions(
+            &records.components[0].data,
+            &[("TAB", LAYER_BOTTOM), ("TAB", LAYER_BOTTOM_SOLDER)],
+        );
+    }
+
+    #[test]
+    fn real_footprint_keeps_each_irregular_pad_separate() {
+        let payload = serde_json::from_str(include_str!(
+            "../../tests/fixtures/lceda_footprint_c29073231.json"
+        ))
+        .unwrap();
+        let library = build_pcblib_from_payload(&payload, "QFN-custom-pads", None).unwrap();
+        let records = crate::altium::merge::pcblib_records_from_library(&library).unwrap();
+        let expected: Vec<_> = [LAYER_TOP, LAYER_TOP_SOLDER]
+            .into_iter()
+            .flat_map(|layer| ["1", "15", "7", "9", "6"].map(|name| (name, layer)))
+            .collect();
+        assert_native_custom_regions(&records.components[0].data, &expected);
     }
 
     #[test]

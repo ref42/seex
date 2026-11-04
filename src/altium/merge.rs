@@ -1667,7 +1667,7 @@ mod tests {
     }
 
     #[test]
-    fn merged_pcblib_keeps_extended_primitive_information() {
+    fn merged_pcblib_keeps_custom_pad_ownership_and_mask_information() {
         let payload: Value = serde_json::from_str(include_str!(
             "../../tests/fixtures/lceda_footprint_c29073231.json"
         ))
@@ -1681,7 +1681,12 @@ mod tests {
             "irregular pads must produce mask entries"
         );
 
-        let records = pcblib_records_from_library(&library).expect("capture PcbLib records");
+        let mut records = pcblib_records_from_library(&library).expect("capture PcbLib records");
+        let other = build_pcblib_from_payload(&payload, "SECOND_CUSTOM_FOOTPRINT", None)
+            .expect("build second footprint");
+        records
+            .components
+            .extend(pcblib_records_from_library(&other).unwrap().components);
         let captured = records.components[0]
             .extended_primitive_information
             .clone()
@@ -1690,6 +1695,19 @@ mod tests {
         let path = temp_path("export_merge_pcblib_mask", "PcbLib");
         write_pcblib_records(&records, &path).expect("write merged PcbLib");
         let round_trip = read_pcblib_records(&path).expect("read merged PcbLib");
+        assert_eq!(round_trip.components.len(), 2);
+        for (before, after) in records.components.iter().zip(&round_trip.components) {
+            assert!(
+                before
+                    .data
+                    .windows(b"|PADINDEX=".len())
+                    .any(|bytes| bytes == b"|PADINDEX=")
+            );
+            assert_eq!(
+                after.data, before.data,
+                "pad ownership and contour records must survive merge without global reindexing"
+            );
+        }
         assert_eq!(
             round_trip.components[0]
                 .extended_primitive_information
