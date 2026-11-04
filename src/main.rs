@@ -18,13 +18,13 @@ mod extract;
 mod kicad;
 mod lceda;
 mod lcsc;
-mod metadata;
 mod library_tools;
-mod text_export;
+mod metadata;
 mod monitor;
 mod progress;
 mod step_logo;
 mod step_model;
+mod text_export;
 mod ui;
 mod util;
 
