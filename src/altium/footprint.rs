@@ -443,13 +443,25 @@ pub fn build_pcblib_from_payload_with_model(
         let is_custom_poly =
             hole_mm <= 0.000_001 && pad_raw.custom_polygon && pad_raw.polygon_points.is_some();
         let needs_custom_mask = hole_mm <= 0.000_001 && pad_raw.custom_polygon;
-        let (shape, width, height, rotation) = if is_custom_poly {
+        let (anchor, diameter) = if is_custom_poly {
+            custom_pad_anchor(
+                pad_raw.polygon_points.as_deref().unwrap(),
+                RawPoint {
+                    x: pad_raw.x,
+                    y: pad_raw.y,
+                },
+            )
+        } else {
             (
-                PAD_SHAPE_ROUND,
-                CUSTOM_PAD_HOTSPOT_UNITS,
-                CUSTOM_PAD_HOTSPOT_UNITS,
+                RawPoint {
+                    x: pad_raw.x,
+                    y: pad_raw.y,
+                },
                 0.0,
             )
+        };
+        let (shape, width, height, rotation) = if is_custom_poly {
+            (PAD_SHAPE_ROUND, diameter, diameter, 0.0)
         } else {
             (
                 map_pad_shape(&pad_raw.shape, pad_raw.width, pad_raw.height),
@@ -461,8 +473,8 @@ pub fn build_pcblib_from_payload_with_model(
         push_pad(
             &mut component,
             &pad_raw,
-            pad_raw.x,
-            pad_raw.y,
+            anchor.x,
+            anchor.y,
             width,
             height,
             rotation,
@@ -1548,6 +1560,78 @@ impl Bounds {
     }
 }
 
+/// A polygon's electrical pad also supplies Altium's on-screen designator.
+/// The former fixed 0.06 mm hotspot made that label effectively invisible.
+/// Fit a round pad inside the copper, leaving the exact outline and masks to
+/// their existing regions. Do not add silkscreen/copper text as a fake label.
+fn custom_pad_anchor(points: &[RawPoint], original: RawPoint) -> (RawPoint, f64) {
+    let Some(bounds) = Bounds::from_raw_points(points) else {
+        return (original, CUSTOM_PAD_HOTSPOT_UNITS);
+    };
+    let clearance = |point: RawPoint| -> f64 {
+        if !inside_polygon(point, points) {
+            return 0.0;
+        }
+        points
+            .iter()
+            .zip(points.iter().cycle().skip(1))
+            .take(points.len())
+            .map(|(&a, &b)| distance_to_segment(point, a, b))
+            .fold(f64::INFINITY, f64::min)
+    };
+    let mut center = original;
+    let mut radius = clearance(original);
+    // Include the original anchor and a grid across the entire outline so a
+    // narrow terminal neck does not constrain the label in a wider pad body.
+    for iy in 0..=16 {
+        for ix in 0..=16 {
+            let point = RawPoint {
+                x: bounds.min_x + (bounds.max_x - bounds.min_x) * ix as f64 / 16.0,
+                y: bounds.min_y + (bounds.max_y - bounds.min_y) * iy as f64 / 16.0,
+            };
+            let candidate = clearance(point);
+            if candidate > radius {
+                center = point;
+                radius = candidate;
+            }
+        }
+    }
+    if radius.is_finite() && radius > 0.001 {
+        // Leave clearance for integer coordinate rounding in the PcbLib writer.
+        (center, radius * 2.0 * 0.98)
+    } else {
+        (original, CUSTOM_PAD_HOTSPOT_UNITS)
+    }
+}
+
+fn inside_polygon(point: RawPoint, points: &[RawPoint]) -> bool {
+    let mut inside = false;
+    for (&a, &b) in points
+        .iter()
+        .zip(points.iter().cycle().skip(1))
+        .take(points.len())
+    {
+        if (a.y > point.y) != (b.y > point.y)
+            && point.x < (b.x - a.x) * (point.y - a.y) / (b.y - a.y) + a.x
+        {
+            inside = !inside;
+        }
+    }
+    inside
+}
+
+fn distance_to_segment(point: RawPoint, a: RawPoint, b: RawPoint) -> f64 {
+    let dx = b.x - a.x;
+    let dy = b.y - a.y;
+    let length_squared = dx * dx + dy * dy;
+    let t = if length_squared > 0.0 {
+        (((point.x - a.x) * dx + (point.y - a.y) * dy) / length_squared).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    (point.x - a.x - t * dx).hypot(point.y - a.y - t * dy)
+}
+
 fn pad_outline_region(pad: &PadRaw) -> Option<Vec<CoordPoint>> {
     if map_pad_shape(&pad.shape, pad.width, pad.height) == PAD_SHAPE_ROUNDED_RECTANGLE {
         return rounded_rect_pad_outline(
@@ -2286,5 +2370,159 @@ mod tests {
                 .take(points.len().saturating_sub(2))
                 .any(|point| point.x > 2.486 && point.x < 285.274 && point.y > 177.846)
         );
+    }
+}
+
+#[cfg(test)]
+mod custom_pad_label_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn sot89_like_payload() -> Value {
+        // A narrow lead joins a wide irregular body, with the upstream pad
+        // anchor in the lead. The label must remain a real pad designator.
+        let polygon = json!([
+            -40, -8, "L", -10, -8, 0, -25, 50, -25, 65, -10, 65, 10, 50, 25, 0, 25, -10, 8, -40, 8,
+            -40, -8
+        ]);
+        let rows = [
+            json!([
+                "PAD",
+                "p1",
+                0,
+                "",
+                1,
+                "1",
+                -30,
+                40,
+                0,
+                null,
+                ["RECT", 24, 10],
+                []
+            ]),
+            json!([
+                "PAD",
+                "p2",
+                0,
+                "",
+                1,
+                "2",
+                -30,
+                0,
+                0,
+                null,
+                ["POLY", polygon],
+                []
+            ]),
+            json!([
+                "PAD",
+                "p3",
+                0,
+                "",
+                1,
+                "3",
+                -30,
+                -40,
+                0,
+                null,
+                ["RECT", 24, 10],
+                []
+            ]),
+        ];
+        json!({"result":{"dataStr":rows.iter().map(Value::to_string).collect::<Vec<_>>().join("\n")}})
+    }
+
+    #[test]
+    fn irregular_pad_has_readable_real_designator_and_unchanged_copper() {
+        let library =
+            build_pcblib_from_payload(&sot89_like_payload(), "SOT89-label-regression", None)
+                .unwrap();
+        let component = &library.components[0];
+        assert_eq!(
+            component
+                .pads
+                .iter()
+                .map(|p| p.designator.as_str())
+                .collect::<Vec<_>>(),
+            ["1", "2", "3"]
+        );
+        let pad = &component.pads[1];
+        assert_eq!(pad.shape_top, PAD_SHAPE_ROUND);
+        assert!(pad.size_top.x > raw_from_easy_units(30.0));
+        assert!(
+            pad.location.x > 0,
+            "move out of the narrow lead into the wide copper body"
+        );
+        let copper = component
+            .regions
+            .iter()
+            .find(|r| r.layer == LAYER_TOP)
+            .unwrap();
+        assert_eq!(copper.outline[0], coord_from_easy_units(-40.0, -8.0));
+        assert_eq!(copper.outline.len(), 11);
+        assert!(
+            component
+                .regions
+                .iter()
+                .any(|r| r.layer == LAYER_TOP_SOLDER && r.outline == copper.outline)
+        );
+        assert_eq!(component.extended_primitive_information.len(), 1);
+        assert_eq!(
+            component.pads[0].size_top,
+            coord_from_easy_units(24.0, 10.0)
+        );
+        // Confirm the number is present in the actual serialized pad records.
+        let records = crate::altium::merge::pcblib_records_from_library(&library).unwrap();
+        let data = &records.components[0].data;
+        let skip_block = |offset: usize| {
+            offset
+                + 4
+                + (u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap()) & 0x00ff_ffff)
+                    as usize
+        };
+        let mut offset = skip_block(0); // component name
+        for expected in [b'1', b'2', b'3'] {
+            assert_eq!(data[offset], 2); // Altium pad primitive
+            offset += 1;
+            assert_eq!(data[offset + 4], 1); // Pascal string length
+            assert_eq!(data[offset + 5], expected);
+            for _ in 0..6 {
+                offset = skip_block(offset);
+            }
+        }
+    }
+
+    #[test]
+    fn anchors_fit_inside_concave_and_rotated_polygons() {
+        let outline = [
+            (-40., -8.),
+            (-10., -8.),
+            (0., -25.),
+            (50., -25.),
+            (65., -10.),
+            (65., 10.),
+            (50., 25.),
+            (0., 25.),
+            (-10., 8.),
+            (-40., 8.),
+        ];
+        for degrees in [0.0_f64, 37.0, 90.0, 180.0] {
+            let angle = degrees.to_radians();
+            let transform = |x: f64, y: f64| RawPoint {
+                x: 123.0 + x * angle.cos() - y * angle.sin(),
+                y: -74.0 + x * angle.sin() + y * angle.cos(),
+            };
+            let points: Vec<_> = outline.iter().map(|&(x, y)| transform(x, y)).collect();
+            let (center, diameter) = custom_pad_anchor(&points, transform(-30., 0.));
+            assert!(diameter > 30.0);
+            assert!(inside_polygon(center, &points));
+            for (&a, &b) in points
+                .iter()
+                .zip(points.iter().cycle().skip(1))
+                .take(points.len())
+            {
+                assert!(distance_to_segment(center, a, b) > diameter / 2.0);
+            }
+        }
     }
 }
