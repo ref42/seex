@@ -275,3 +275,9 @@ cells. Columns include LCSC ID, quantity (initially 1), MPN, manufacturer,
 description, package, datasheet/component links, capture count, first/last seen,
 and metadata status. Capture count is kept separate from required BOM quantity;
 edit quantities for your design. Raw clipboard contents are excluded.
+
+The Libraries results area scrolls independently of its action buttons. After
+inspection, **Export CSV / 导出 CSV** saves one row per component from the displayed
+snapshot, with source/format, component name and ID, description, available
+part/primitive/model counts, and a column for each custom KiCad property. CSV
+export uses UTF-8 with a BOM and spreadsheet-safe quoted values.

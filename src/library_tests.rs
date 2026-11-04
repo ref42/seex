@@ -41,3 +41,71 @@ fn resuming_monitoring_does_not_import_private_clipboard() {
     assert!(state.process_clipboard_change("C4242".into()));
     assert_eq!(state.get_unique_ids(), vec!["C4242"]);
 }
+
+#[test]
+fn library_csv_exports_the_inspected_snapshot_and_custom_properties() {
+    let root = std::env::temp_dir().join(format!(
+        "seex-library-csv-{}-{}",
+        std::process::id(),
+        chrono::Utc::now().timestamp_nanos_opt().unwrap()
+    ));
+    fs::create_dir(&root).unwrap();
+    let source = root.join("parts.kicad_sym");
+    fs::write(
+        &source,
+        r#"(kicad_symbol_lib (version 20231120)
+        (symbol "Part A" (property "LCSC" "C2040")
+            (property "Description" "中文,\"quoted\"")
+            (property "Custom" "=1+1"))
+        (symbol "Part B" (property "Notes" "first\nsecond")))"#,
+    )
+    .unwrap();
+    let inspection = library_tools::read_library(&source).unwrap();
+    assert_eq!(inspection.rows.len(), 2);
+    assert_eq!(inspection.rows[0].id, "C2040");
+    assert_eq!(inspection.rows[0].description, "中文,\"quoted\"");
+    let original = fs::read(&source).unwrap();
+    assert!(inspection.export_csv(&source).is_err());
+    assert_eq!(fs::read(&source).unwrap(), original);
+    // Export uses the displayed data even if the library has since moved.
+    fs::remove_file(&source).unwrap();
+    let output = root.join("inventory.csv");
+    fs::write(&output, b"old export").unwrap();
+    inspection.export_csv(&output).unwrap();
+    let bytes = fs::read(output).unwrap();
+    assert!(bytes.starts_with(b"\xEF\xBB\xBF"));
+    let text = std::str::from_utf8(&bytes[3..]).unwrap();
+    assert!(text.contains("\"property:Custom\""));
+    assert!(text.contains("\"property:Notes\""));
+    assert!(text.contains("\"中文,\"\"quoted\"\"\""));
+    assert!(text.contains("\"'=1+1\""));
+    assert!(text.contains("\"first\nsecond\""));
+    assert!(text.ends_with("\r\n"));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn pcb_inventory_csv_includes_all_displayed_counts() {
+    let source = std::path::PathBuf::from("example.PcbLib");
+    let inspection = library_tools::LibraryInspection {
+        source,
+        format: "pcblib".into(),
+        embedded_models: Some(30),
+        rows: vec![library_tools::LibraryRow {
+            name: "C0603".into(),
+            primitives: Some(50),
+            ..Default::default()
+        }],
+    };
+    assert!(inspection.report().contains("primitives: 50"));
+    let output = std::env::temp_dir().join(format!(
+        "seex-pcb-inventory-{}-{}.csv",
+        std::process::id(),
+        chrono::Utc::now().timestamp_nanos_opt().unwrap()
+    ));
+    inspection.export_csv(&output).unwrap();
+    let csv = fs::read_to_string(&output).unwrap();
+    assert!(csv.contains("\"primitive_count\",\"embedded_model_count\""));
+    assert!(csv.contains("\"C0603\",\"\",\"\",\"\",\"50\",\"30\""));
+    fs::remove_file(output).unwrap();
+}

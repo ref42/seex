@@ -10,5 +10,5 @@
 - [x] you need implement all of  those improvements above in one or more branches before you merge them to the master, merge is only allowed until i say so.
 
 
-Implementation: `codex/todo-improvements`. No merge to master has been performed.
+Implementation: `todo-improvements`. No merge to master has been performed.
 Library format support and preservation limits are documented in README.en.md.

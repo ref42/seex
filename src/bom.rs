@@ -235,7 +235,7 @@ fn first_non_empty(values: impl IntoIterator<Item = String>) -> String {
         .unwrap_or_default()
 }
 
-fn csv_field(value: &str) -> String {
+pub(crate) fn csv_field(value: &str) -> String {
     // Quoting alone does not prevent spreadsheets interpreting formulas.
     let trimmed = value.trim_start();
     let safe = if trimmed.starts_with(['=', '+', '-', '@']) || value.starts_with(['\t', '\r', '\n'])

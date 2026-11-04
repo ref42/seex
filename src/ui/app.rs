@@ -1018,12 +1018,25 @@ impl SeexUi {
             .bg(theme::surface())
             .border_b(px(1.0))
             .border_color(theme::border())
-            .child(self.nav_item(Page::Monitor, locale::t("Monitor", "监听"), cx))
-            .child(self.nav_item(Page::Libraries, locale::t("Libraries", "库管理"), cx))
-            .child(self.nav_item(Page::Export, locale::t("Export", "导出"), cx))
-            .child(self.nav_item(Page::Font, locale::t("Language & Font", "语言与字体"), cx))
-            .child(self.nav_item(Page::More, locale::t("More", "更多"), cx))
-            .child(div().flex_1())
+            .child(
+                div()
+                    .id("top-navigation")
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .overflow_x_scroll()
+                    .child(self.nav_item(Page::Monitor, locale::t("Monitor", "监听"), cx))
+                    .child(self.nav_item(Page::Libraries, locale::t("Libraries", "库管理"), cx))
+                    .child(self.nav_item(Page::Export, locale::t("Export", "导出"), cx))
+                    .child(self.nav_item(
+                        Page::Font,
+                        locale::t("Language & Font", "语言与字体"),
+                        cx,
+                    ))
+                    .child(self.nav_item(Page::More, locale::t("More", "更多"), cx)),
+            )
             .child(self.pin_toggle(cx))
             .child(self.monitoring_label())
     }
