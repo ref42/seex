@@ -109,3 +109,41 @@ fn pcb_inventory_csv_includes_all_displayed_counts() {
     assert!(csv.contains("\"C0603\",\"\",\"\",\"\",\"50\",\"30\""));
     fs::remove_file(output).unwrap();
 }
+
+#[test]
+fn library_markdown_preserves_unicode_and_properties() {
+    let inspection = library_tools::LibraryInspection {
+        source: "parts.SchLib".into(),
+        format: "schlib".into(),
+        embedded_models: None,
+        rows: vec![library_tools::LibraryRow {
+            name: "R1".into(),
+            description: "±20% 1.1Ω -25℃ 中文".into(),
+            ..Default::default()
+        }],
+    };
+    let output = std::env::temp_dir().join(format!(
+        "seex-inventory-md-{}-{}.md",
+        std::process::id(),
+        chrono::Utc::now().timestamp_nanos_opt().unwrap()
+    ));
+    inspection
+        .export(&output, crate::text_export::Format::Markdown)
+        .unwrap();
+    let text = fs::read_to_string(&output).unwrap();
+    assert!(text.contains("±20% 1.1Ω -25℃ 中文"));
+    assert!(text.contains("| --- |"));
+    fs::remove_file(output).unwrap();
+}
+
+/// Run locally with SEEX_TEST_SCHLIB pointing to an external regression sample.
+#[test]
+#[ignore = "requires an external Altium library sample"]
+fn external_altium_unicode_sample() {
+    let source = std::env::var_os("SEEX_TEST_SCHLIB").expect("set SEEX_TEST_SCHLIB");
+    let inspection = library_tools::read_library(std::path::Path::new(&source)).unwrap();
+    let text = inspection.report();
+    assert!(text.contains("℃"));
+    assert!(text.contains("±20%"));
+    assert!(text.contains("1.1Ω"));
+}

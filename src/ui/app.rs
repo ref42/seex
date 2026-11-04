@@ -1038,7 +1038,7 @@ impl SeexUi {
                     .child(self.nav_item(Page::More, locale::t("More", "更多"), cx)),
             )
             .child(self.pin_toggle(cx))
-            .child(self.monitoring_label())
+            .child(self.monitoring_label(cx))
     }
 
     fn nav_item(&mut self, page: Page, label: &'static str, cx: &mut Context<Self>) -> AnyElement {
@@ -1075,7 +1075,7 @@ impl SeexUi {
         .into_any_element()
     }
 
-    fn monitoring_label(&self) -> AnyElement {
+    fn monitoring_label(&self, cx: &mut Context<Self>) -> AnyElement {
         let monitoring = self
             .state
             .lock()
@@ -1087,6 +1087,20 @@ impl SeexUi {
             (locale::t("● Paused", "● 已暂停"), theme::danger())
         };
         div()
+            .id("monitoring-toggle")
+            .flex_shrink_0()
+            .px(px(10.0))
+            .py(px(8.0))
+            .rounded(px(theme::RADIUS_MD))
+            .cursor_pointer()
+            .hover(|style| style.bg(theme::top_bar_hover()))
+            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                if let Ok(mut state) = this.state.lock() {
+                    let enabled = !state.monitoring;
+                    state.set_monitoring(enabled);
+                }
+                cx.notify();
+            }))
             .text_size(px(theme::scaled_font(24.0)))
             .text_color(color)
             .child(label)

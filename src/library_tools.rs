@@ -3,6 +3,22 @@ use crate::error::{AppError, Result};
 use std::path::Path;
 
 pub fn merge(input: &Path, output: &Path) -> Result<String> {
+    if output.is_dir() {
+        return Err(AppError::Other(format!(
+            "{} is a folder. Choose a NEW library base filename inside a writable folder.",
+            output.display()
+        )));
+    }
+    merge_inner(input, output).map_err(|error| match error {
+        AppError::Io(error) => crate::text_export::io_error(
+            &format!("merge libraries from {} into", input.display()),
+            output,
+            error,
+        ),
+        other => other,
+    })
+}
+fn merge_inner(input: &Path, output: &Path) -> Result<String> {
     let altium = crate::altium::merge::directory_has_libraries(input)?;
     let kicad = crate::kicad::merge::directory_has_libraries(input)?;
     if altium && kicad {
@@ -93,7 +109,10 @@ impl LibraryInspection {
     }
 
     pub fn export_csv(&self, output: &Path) -> Result<()> {
-        // Export the inspection snapshot, without reopening a possibly changed library.
+        self.export(output, crate::text_export::Format::Csv)
+    }
+
+    pub fn export(&self, output: &Path, format: crate::text_export::Format) -> Result<()> {
         let same_file = output
             .canonicalize()
             .ok()
@@ -101,15 +120,19 @@ impl LibraryInspection {
             .is_some_and(|(output, source)| output == source);
         if output == self.source || same_file {
             return Err(AppError::Other(
-                "Choose a CSV path different from the source library".into(),
+                "Choose an export path different from the source library".into(),
             ));
         }
+        crate::text_export::write(output, &self.table().encode(format))
+    }
+
+    fn table(&self) -> crate::text_export::Table {
         let keys: std::collections::BTreeSet<_> = self
             .rows
             .iter()
             .flat_map(|r| r.properties.keys().cloned())
             .collect();
-        let mut bytes = Vec::from(&b"\xEF\xBB\xBF"[..]);
+        let mut rows = Vec::new();
         let mut header: Vec<String> = [
             "source_library",
             "format",
@@ -124,7 +147,7 @@ impl LibraryInspection {
         .map(str::to_owned)
         .collect();
         header.extend(keys.iter().map(|k| format!("property:{k}")));
-        csv_row(&mut bytes, &header);
+
         for row in &self.rows {
             let mut cells = vec![
                 self.source.display().to_string(),
@@ -142,46 +165,13 @@ impl LibraryInspection {
                 keys.iter()
                     .map(|key| row.properties.get(key).cloned().unwrap_or_default()),
             );
-            csv_row(&mut bytes, &cells);
+            rows.push(cells);
         }
-        // Stage beside the destination so a failed write preserves any prior
-        // CSV, and replacing a hard-linked destination cannot alter its source.
-        let parent = output
-            .parent()
-            .filter(|p| !p.as_os_str().is_empty())
-            .unwrap_or(Path::new("."));
-        let temporary = parent.join(format!(
-            ".seex-inventory-{}-{}.tmp",
-            std::process::id(),
-            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
-        ));
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temporary)?;
-        let result = (|| -> std::io::Result<()> {
-            use std::io::Write;
-            file.write_all(&bytes)?;
-            file.sync_all()?;
-            drop(file);
-            std::fs::rename(&temporary, output)
-        })();
-        if result.is_err() {
-            let _ = std::fs::remove_file(&temporary);
+        crate::text_export::Table {
+            headers: header,
+            rows,
         }
-        result?;
-        Ok(())
     }
-}
-
-fn csv_row(bytes: &mut Vec<u8>, cells: &[String]) {
-    let line = cells
-        .iter()
-        .map(|v| crate::bom::csv_field(v))
-        .collect::<Vec<_>>()
-        .join(",");
-    bytes.extend_from_slice(line.as_bytes());
-    bytes.extend_from_slice(b"\r\n");
 }
 
 #[cfg(test)]
@@ -190,6 +180,13 @@ pub fn inspect(path: &Path) -> Result<String> {
 }
 
 pub fn read_library(path: &Path) -> Result<LibraryInspection> {
+    read_library_inner(path).map_err(|error| match error {
+        AppError::Io(error) => crate::text_export::io_error("read library", path, error),
+        other => other,
+    })
+}
+
+fn read_library_inner(path: &Path) -> Result<LibraryInspection> {
     let extension = path
         .extension()
         .and_then(|e| e.to_str())

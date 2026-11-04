@@ -266,7 +266,7 @@ published; this includes some vendor extensions and schematic image storage.
 Legacy KiCad `.lib`/`.mod`, Altium integrated libraries, and format conversion
 are not supported by this tool.
 
-Clipboard monitoring can be paused on the Monitor page. Resuming skips the
+Clipboard monitoring can be paused by clicking the listening/paused status in the top-right toolbar. Resuming skips the
 current clipboard contents and captures subsequent changes. Manual import works
 while monitoring is paused. Quick ID and Full Info matching are always enabled.
 
@@ -281,3 +281,13 @@ inspection, **Export CSV / 导出 CSV** saves one row per component from the dis
 snapshot, with source/format, component name and ID, description, available
 part/primitive/model counts, and a column for each custom KiCad property. CSV
 export uses UTF-8 with a BOM and spreadsheet-safe quoted values.
+
+Both BOM and library inventory exports also offer **Markdown (.md)** tables with
+the same columns and metadata as CSV, readable in a text editor or Markdown
+viewer. Inspection results and error messages support text selection and copy;
+**Copy all** copies the full inspection report. Altium Unicode parameter values
+take precedence over legacy ANSI fallbacks, preserving symbols such as Ω, ±,
+and ℃. Characters already replaced by `?` in the source cannot be reconstructed.
+New BOM export paths default to Documents/SeEx instead of the executable folder.
+Export errors include the path and recovery guidance; close a file locked by
+another application or choose a new filename in a writable folder.

@@ -31,35 +31,12 @@ impl SeexUi {
             .flex()
             .flex_col()
             .w_full()
-            .child(self.match_modes(cx))
-            .child(v_space(10.0))
             .child(self.import_and_export_row(window, cx))
             .child(v_space(10.0))
             .child(self.monitor_actions(cx))
             .child(v_space(10.0))
             .child(self.matched_list(cx))
             .into_any_element()
-    }
-
-    fn match_modes(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let monitoring = self
-            .state
-            .lock()
-            .map(|state| state.monitoring)
-            .unwrap_or(false);
-        components::selectable(
-            "monitoring-toggle",
-            locale::t("Clipboard monitoring", "剪贴板监控"),
-            monitoring,
-            cx.listener(|this, _event: &ClickEvent, _window, cx| {
-                if let Ok(mut state) = this.state.lock() {
-                    let enabled = !state.monitoring;
-                    state.set_monitoring(enabled);
-                }
-                cx.notify();
-            }),
-        )
-        .into_any_element()
     }
 
     fn import_and_export_row(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
@@ -187,8 +164,8 @@ impl SeexUi {
                         .items_center()
                         .gap(px(12.0))
                         .child(components::fixed_label(locale::t(
-                            "BOM CSV file:",
-                            "BOM CSV 文件:",
+                            "BOM export path:",
+                            "BOM 导出路径:",
                         )))
                         .child(
                             div()
@@ -350,7 +327,22 @@ impl SeexUi {
                     export_label,
                     matched_count > 0 && !bom_running,
                     cx.listener(|this, _event: &ClickEvent, _window, cx| {
-                        crate::bom::spawn_save_matched(std::sync::Arc::clone(&this.state));
+                        crate::bom::spawn_save_matched(
+                            std::sync::Arc::clone(&this.state),
+                            crate::text_export::Format::Csv,
+                        );
+                        cx.notify();
+                    }),
+                ))
+                .child(components::button(
+                    "export-bom-markdown",
+                    locale::t("Export BOM Markdown", "导出 BOM Markdown"),
+                    matched_count > 0 && !bom_running,
+                    cx.listener(|this, _: &ClickEvent, _, cx| {
+                        crate::bom::spawn_save_matched(
+                            std::sync::Arc::clone(&this.state),
+                            crate::text_export::Format::Markdown,
+                        );
                         cx.notify();
                     }),
                 ))

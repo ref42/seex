@@ -20,6 +20,7 @@ mod lceda;
 mod lcsc;
 mod metadata;
 mod library_tools;
+mod text_export;
 mod monitor;
 mod progress;
 mod step_logo;

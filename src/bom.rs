@@ -1,17 +1,16 @@
 use serde_json::Value;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use crate::monitor::{self, MonitorState};
 
-pub fn spawn_save_matched(state: Arc<Mutex<MonitorState>>) {
+pub fn spawn_save_matched(state: Arc<Mutex<MonitorState>>, format: crate::text_export::Format) {
     if let Ok(mut s) = state.lock() {
         if s.bom_running {
             return;
         }
         s.bom_running = true;
-        s.bom_last_result = Some("Exporting BOM CSV...".to_string());
+        s.bom_last_result = Some(format!("Exporting BOM {}...", format.label()));
     }
 
     std::thread::spawn(move || {
@@ -19,7 +18,7 @@ pub fn spawn_save_matched(state: Arc<Mutex<MonitorState>>) {
             .enable_all()
             .build()
             .map_err(|err| err.to_string())
-            .and_then(|runtime| runtime.block_on(save_matched_inner(Arc::clone(&state))));
+            .and_then(|runtime| runtime.block_on(save_matched_inner(Arc::clone(&state), format)));
 
         let message = match result {
             Ok(message) => message,
@@ -34,31 +33,36 @@ pub fn spawn_save_matched(state: Arc<Mutex<MonitorState>>) {
     });
 }
 
-async fn save_matched_inner(state: Arc<Mutex<MonitorState>>) -> Result<String, String> {
+async fn save_matched_inner(
+    state: Arc<Mutex<MonitorState>>,
+    format: crate::text_export::Format,
+) -> Result<String, String> {
     let (path, entries, language) = {
         let m = state.lock().map_err(|_| "State lock failed".to_string())?;
         if m.matched.is_empty() {
             return Ok("No matched results to export".to_string());
         }
         (
-            PathBuf::from(&m.matched_save_path),
+            PathBuf::from(&m.matched_save_path).with_extension(format.extension()),
             m.matched.clone(),
             m.bom_language.clone(),
         )
     };
 
     if let Err(err) = ensure_parent_dir(&path) {
-        return Ok(format!("Export failed: {}", err));
+        return Err(crate::text_export::io_error("create export folder", &path, err).to_string());
     }
 
     let metadata = load_bom_metadata(&entries, &language).await;
-    write_bom_csv(&path, &entries, &metadata)?;
+    crate::text_export::write(&path, &bom_table(&entries, &metadata).encode(format))
+        .map_err(|e| e.to_string())?;
     let unavailable = metadata
         .iter()
         .filter(|row| row.mpn.is_empty() && row.description.is_empty())
         .count();
     Ok(format!(
-        "Exported BOM CSV to {} ({}; {} rows; metadata unavailable for {})",
+        "Exported BOM {} to {} ({}; {} rows; metadata unavailable for {})",
+        format.label(),
         path.display(),
         metadata_language_label(&language),
         entries.len(),
@@ -75,52 +79,51 @@ fn ensure_parent_dir(path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
 fn write_bom_csv(
-    output_path: &Path,
+    output: &Path,
     entries: &[monitor::MatchedEntry],
     metadata: &[BomRow],
 ) -> Result<(), String> {
-    let file = std::fs::File::create(output_path).map_err(|err| err.to_string())?;
-    let mut writer = std::io::BufWriter::new(file);
-    writer
-        .write_all(b"\xEF\xBB\xBF")
-        .map_err(|err| err.to_string())?;
-    writeln!(
-        writer,
-        "lcsc_id,quantity,mpn,manufacturer,description,package,datasheet_url,component_url,capture_count,first_seen,last_seen,metadata_status\r"
+    crate::text_export::write(
+        output,
+        &bom_table(entries, metadata).encode(crate::text_export::Format::Csv),
     )
-    .map_err(|err| err.to_string())?;
-    for entry in entries {
-        let row = metadata
-            .iter()
-            .find(|row| row.lcsc_id == entry.lcsc_id)
-            .cloned()
-            .unwrap_or_else(|| BomRow::from_entry(entry));
-        writeln!(
-            writer,
-            "{},1,{},{},{},{},{},{},{},{},{},{}\r",
-            csv_field(&entry.lcsc_id),
-            csv_field(&row.mpn),
-            csv_field(&row.manufacturer),
-            csv_field(&row.description),
-            csv_field(&row.package_name),
-            csv_field(&row.datasheet_url),
-            csv_field(&format!(
-                "https://www.lcsc.com/product-detail/{}.html",
-                entry.lcsc_id
-            )),
-            entry.count,
-            csv_field(&entry.first_seen),
-            csv_field(&entry.last_seen),
-            csv_field(if row.mpn.is_empty() && row.description.is_empty() {
+    .map_err(|e| e.to_string())
+}
+
+fn bom_table(entries: &[monitor::MatchedEntry], metadata: &[BomRow]) -> crate::text_export::Table {
+    let headers = "lcsc_id,quantity,mpn,manufacturer,description,package,datasheet_url,component_url,capture_count,first_seen,last_seen,metadata_status".split(',').map(str::to_owned).collect();
+    let rows = entries
+        .iter()
+        .map(|entry| {
+            let row = metadata
+                .iter()
+                .find(|row| row.lcsc_id == entry.lcsc_id)
+                .cloned()
+                .unwrap_or_else(|| BomRow::from_entry(entry));
+            let status = if row.mpn.is_empty() && row.description.is_empty() {
                 "unavailable"
             } else {
                 "available"
-            }),
-        )
-        .map_err(|err| err.to_string())?;
-    }
-    writer.flush().map_err(|err| err.to_string())
+            };
+            vec![
+                entry.lcsc_id.clone(),
+                "1".into(),
+                row.mpn,
+                row.manufacturer,
+                row.description,
+                row.package_name,
+                row.datasheet_url,
+                format!("https://www.lcsc.com/product-detail/{}.html", entry.lcsc_id),
+                entry.count.to_string(),
+                entry.first_seen.clone(),
+                entry.last_seen.clone(),
+                status.into(),
+            ]
+        })
+        .collect();
+    crate::text_export::Table { headers, rows }
 }
 
 #[derive(Clone)]
@@ -277,11 +280,32 @@ mod csv_tests {
         let data = std::fs::read(&path).unwrap();
         assert!(data.starts_with(b"\xEF\xBB\xBF"));
         let text = std::str::from_utf8(&data[3..]).unwrap();
-        assert!(text.contains("\r\n\"C2040\",1,"));
-        assert!(text.contains(",7,"));
+        assert!(text.contains("\r\n\"C2040\",\"1\","));
+        assert!(text.contains(",\"7\","));
         assert!(text.contains("unavailable"));
         assert!(!text.contains("PRIVATE CLIPBOARD"));
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn bom_markdown_includes_same_metadata_without_clipboard_text() {
+        let entry = monitor::MatchedEntry {
+            lcsc_id: "C2040".into(),
+            first_seen: "today".into(),
+            last_seen: "today".into(),
+            count: 7,
+            source_text: "PRIVATE".into(),
+        };
+        let mut row = BomRow::from_entry(&entry);
+        row.description = "中文 ±20% 1.1Ω -25℃".into();
+        let text = String::from_utf8(
+            bom_table(&[entry], &[row]).encode(crate::text_export::Format::Markdown),
+        )
+        .unwrap();
+        assert!(text.contains("中文 ±20% 1.1Ω -25℃"));
+        assert!(text.contains("| C2040 | 1 |"));
+        assert!(text.contains("| 7 |"));
+        assert!(!text.contains("PRIVATE"));
     }
 
     #[test]

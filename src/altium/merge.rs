@@ -341,7 +341,8 @@ pub(crate) fn pcblib_records_from_library(library: &PcbLibrary) -> Result<Pcblib
 }
 
 pub(crate) fn read_schlib_records(path: &Path) -> Result<Vec<SchlibRecord>> {
-    let file = File::open(path)?;
+    let file =
+        File::open(path).map_err(|e| crate::text_export::io_error("read library", path, e))?;
     let mut compound = CompoundFile::open(file)?;
     let header = read_stream_bytes(&mut compound, "/FileHeader")?;
     let header_pairs = first_schlib_param_block_pairs(&header, "SchLib file header")?;
@@ -378,7 +379,8 @@ pub(crate) fn write_schlib_records(records: &[SchlibRecord], output_path: &Path)
     let sections = collect_sections(records.iter().map(|record| record.name.as_str()));
     let section_pairs =
         collect_section_key_pairs(records.iter().map(|record| record.name.as_str()), &sections);
-    let file = File::create(output_path)?;
+    let file = File::create(output_path)
+        .map_err(|e| crate::text_export::io_error("write library", output_path, e))?;
     let mut compound = CompoundFile::create(file)?;
 
     write_stream(
@@ -403,7 +405,8 @@ pub(crate) fn write_schlib_records(records: &[SchlibRecord], output_path: &Path)
 }
 
 pub(crate) fn read_pcblib_records(path: &Path) -> Result<PcblibRecordLibrary> {
-    let file = File::open(path)?;
+    let file =
+        File::open(path).map_err(|e| crate::text_export::io_error("read library", path, e))?;
     let mut compound = CompoundFile::open(file)?;
     let names = read_pcblib_component_names(&mut compound)?;
     let derived_sections = collect_sections(names.iter().map(String::as_str));
@@ -471,7 +474,8 @@ pub(crate) fn write_pcblib_records(
     library: &PcblibRecordLibrary,
     output_path: &Path,
 ) -> Result<()> {
-    let file = File::create(output_path)?;
+    let file = File::create(output_path)
+        .map_err(|e| crate::text_export::io_error("write library", output_path, e))?;
     let mut compound = CompoundFile::create(file)?;
     let sections = collect_sections(library.components.iter().map(|record| record.name.as_str()));
     let section_pairs = collect_section_key_pairs(
@@ -897,16 +901,20 @@ fn param_value<'a>(pairs: &'a [(String, String)], key: &str) -> Option<&'a str> 
 
 fn parse_param_pairs(text: &str) -> Vec<(String, String)> {
     let mut pairs = Vec::new();
+    let mut unicode = Vec::new();
     for segment in text.split('|').filter(|segment| !segment.is_empty()) {
         let Some((name, value)) = segment.split_once('=') else {
             continue;
         };
         if let Some(key) = name.strip_prefix("%UTF8%") {
-            pairs.push((key.to_string(), decode_utf8_parameter_value(value)));
+            unicode.push((key.to_string(), decode_utf8_parameter_value(value)));
         } else {
             pairs.push((name.to_string(), value.to_string()));
         }
     }
+    // Altium may store the UTF-8 parameter before its lossy ANSI fallback.
+    // param_value resolves the last occurrence, so Unicode must come last.
+    pairs.extend(unicode);
     pairs
 }
 
@@ -1732,6 +1740,28 @@ fn audit_preserved_streams(source: &Path, roundtrip: &Path) -> Result<()> {
 mod offline_merge_tests {
     use super::*;
     use crate::altium::schlib::{SchlibMetadata, build_component_from_payload_with_metadata};
+
+    #[test]
+    fn unicode_parameters_take_precedence_over_ansi_in_either_order() {
+        let utf8 = encode_utf8_parameter_value("-25℃~+85℃ ±20% 1.1Ω 中文");
+        for text in [
+            format!("|%UTF8%ComponentDescription={utf8}|ComponentDescription=broken legacy"),
+            format!("|ComponentDescription=broken legacy|%UTF8%ComponentDescription={utf8}"),
+        ] {
+            let pairs = parse_param_pairs(&text);
+            assert_eq!(
+                param_value(&pairs, "COMPONENTDESCRIPTION"),
+                Some("-25℃~+85℃ ±20% 1.1Ω 中文")
+            );
+        }
+        assert_eq!(
+            param_value(
+                &parse_param_pairs("|Description=café ? original"),
+                "description"
+            ),
+            Some("café ? original")
+        );
+    }
     #[test]
     fn directory_merge_rejects_conflicts_and_preserves_sources() {
         let root = temp_path("seex-offline-test", "dir");

@@ -15,10 +15,14 @@ pub fn normalize_path_string(path: &str) -> String {
 }
 
 pub fn default_save_path(filename: &str) -> String {
-    std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|d| d.join(filename)))
-        .map(|p| normalize_path_string(&p.to_string_lossy()))
+    directories::UserDirs::new()
+        .map(|dirs| {
+            dirs.document_dir()
+                .unwrap_or(dirs.home_dir())
+                .join("SeEx")
+                .join(filename)
+        })
+        .map(|path| normalize_path_string(&path.to_string_lossy()))
         .unwrap_or_else(|| filename.to_string())
 }
 
