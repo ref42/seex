@@ -19,6 +19,7 @@
 pub mod allegro;
 pub mod capture;
 pub mod ipc7352;
+pub mod step_mesh;
 pub mod step_place;
 pub mod workflow;
 

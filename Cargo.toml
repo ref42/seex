@@ -20,6 +20,7 @@ clap = { version = "4.6.7", features = ["derive"] }
 chrono = "0.4.45"
 dark-light = "3.0.0"
 directories = "6.0.0"
+earcutr = "0.4"
 encoding_rs = "0.8.44"
 futures-util = "0.3.34"
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png"] }
