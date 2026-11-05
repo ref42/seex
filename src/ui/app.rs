@@ -53,6 +53,8 @@ pub enum InputSlot {
     StrokeHex,
     FillHex,
     FontSearch,
+    /// A number box of the pad generator.
+    Pad(crate::ui::pages::pads::PadField),
 }
 
 pub enum ManualImportStatus {
@@ -207,6 +209,8 @@ pub struct SeexUi {
     pub font_names: Vec<String>,
     /// The face used for timestamps and other monospaced text.
     pub mono_family: SharedString,
+    /// The pad generator of the Export page (Cadence target).
+    pub pads: crate::ui::pages::pads::PadsUi,
 }
 
 pub fn app_title() -> String {
@@ -491,6 +495,7 @@ impl SeexUi {
             font_picker: None,
             font_names,
             mono_family,
+            pads: crate::ui::pages::pads::PadsUi::new(),
         }
     }
 
@@ -670,6 +675,7 @@ impl SeexUi {
                 self.schematic_fill_hex.clone(),
             ),
             InputSlot::FontSearch => (locale::t("Search fonts", "搜索字体"), String::new()),
+            InputSlot::Pad(pad) => (pad.placeholder(), self.pads.form.value(pad)),
         }
     }
 
@@ -719,6 +725,11 @@ impl SeexUi {
                 }
             }
             InputSlot::FontSearch => {
+                cx.notify();
+                return;
+            }
+            InputSlot::Pad(pad) => {
+                self.pads.form.values.insert(pad, value);
                 cx.notify();
                 return;
             }
