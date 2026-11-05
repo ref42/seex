@@ -931,10 +931,11 @@ fn library_script_builds_every_footprint_in_its_folder() {
         "Parts",
         std::path::Path::new("E:\\Libs\\Parts_allegro"),
         &["resc1005x40n".to_string(), "sot95p280x145-5n".to_string()],
+        &[],
     );
     assert!(script.contains("skill load(\"E:/Libs/Parts_allegro/Parts.il\")"));
     assert!(script.contains(
-        "seex_build_library(\"E:/Libs/Parts_allegro\" list(\"resc1005x40n\" \"sot95p280x145-5n\"))"
+        "seex_build_library(\"E:/Libs/Parts_allegro\" list(\"resc1005x40n\" \"sot95p280x145-5n\") list())"
     ));
     assert!(script.contains("axlOpenDesign(?design design ?mode \"wf\")"));
     let code: String = script
@@ -943,4 +944,14 @@ fn library_script_builds_every_footprint_in_its_folder() {
         .collect::<Vec<_>>()
         .join("\n");
     assert_eq!(code.matches('(').count(), code.matches(')').count());
+
+    let with_pads = library_script(
+        "Parts",
+        std::path::Path::new("E:\\Libs\\Parts_allegro"),
+        &["mh_c600h320".to_string()],
+        &["c150h90".to_string()],
+    );
+    assert!(with_pads.contains("list(\"mh_c600h320\") list(\"c150h90\"))"));
+    assert!(with_pads.contains("strcat(dir \"/padstacks/\" name \".il\")"));
+    assert!(with_pads.contains("seex_padstack_done(name)"));
 }

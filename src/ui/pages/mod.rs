@@ -7,3 +7,4 @@ pub mod font;
 pub mod libraries;
 pub mod monitor;
 pub mod more;
+pub mod pads;
