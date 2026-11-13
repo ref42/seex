@@ -2,22 +2,30 @@
 //!
 //! The logo is an icon plus the words "LCEDA" and "EasyEDA", usually on one side
 //! of the package, and on many models a second, mirrored "LCEDA" underneath. It
-//! comes in two forms:
+//! comes in these forms:
 //!
-//! * thin solids (about 1 µm) lying on the package (SOT-23 family);
-//! * a relief or engraving (0.001–0.1 mm) merged into a body face. Each letter
+//! * thin solids (about 1 µm, or 0.01 mm sheets) lying on the package (SOT-23
+//!   family, reed switches);
+//! * small solids extruded into the body, one per letter (disc varistors);
+//! * a relief or engraving (0.001–0.15 mm) merged into a body face. Each letter
 //!   is attached to that face through an inner loop of its boundary (passives,
-//!   diodes, LEDs). The face is flat, or the round side of a cylindrical body
-//!   (buzzers, round capacitors).
+//!   diodes, LEDs). The face is flat, the round side of a cylindrical body
+//!   (buzzers, round capacitors), the rounded rim of a disc (a torus), or a
+//!   bulged free-form face, where the flat logo is measured from the plane of
+//!   its own outline.
 //!
 //! Only the logo is touched: part markings, pin-1 marks and cathode bands look
 //! similar but are kept. A piece belongs to the logo when it is the icon (always
 //! the same shape), or one of the logo letters right next to the icon, or part
 //! of a five-letter "LCEDA" row. Letters are recognised by their number of side
-//! faces and how many of those are curved, which does not depend on the scale.
+//! faces and how many of those are curved, which does not depend on the scale; a
+//! row in an unknown font is recognised by its layout (an L at the end, an E in
+//! the middle).
 //!
 //! Thin solids are dropped. For merged letters, their faces are deleted along
-//! with the inner loop of the face they sit on, which leaves that face whole.
+//! with the inner loop of the face they sit on, which leaves that face whole. An
+//! icon that cuts through the edge of the face under it is no relief of its own;
+//! it is given the colour of that face instead.
 //! The result is checked: every shell must still be closed and nothing may
 //! point at a deleted entity. If anything is off, the model is kept as it was and
 //! [`strip_logo`] says so, so the export can tell the user the logo is still there.
@@ -25,10 +33,15 @@
 use std::collections::{HashMap, HashSet};
 
 /// Deepest relief / engraving that can belong to the logo (mm). Round parts
-/// such as buzzers have it cut 0.1 mm deep.
-const MAX_RELIEF_MM: f64 = 0.12;
+/// such as buzzers have it cut 0.1 mm deep, slide switches (C221841) 0.127 mm.
+const MAX_RELIEF_MM: f64 = 0.15;
+/// Largest solid that can be an extruded logo letter or icon (mm).
+const MAX_LOGO_SOLID_MM: f64 = 3.0;
 /// Thickest solid that can be a logo piece (mm).
 const MAX_THIN_SOLID_MM: f64 = 0.005;
+/// Thickest thin solid accepted when both its sides lie flat across its thin
+/// axis (C3715769's letters are 0.01 mm sheets on the side of the body).
+const MAX_FLAT_SOLID_MM: f64 = 0.02;
 /// Two pieces lie in the same plane when their offsets differ by less (mm).
 const PLANE_TOLERANCE_MM: f64 = 0.02;
 /// Largest flood fill accepted as a relief feature (faces).
@@ -47,10 +60,27 @@ const LOGO_LETTERS: [(usize, usize); 8] = [
     (21, 19),
     (22, 14),
 ];
-/// Letters of the separate "LCEDA" row (another font).
-const ROW_LETTERS: [(usize, usize); 6] = [(6, 0), (10, 4), (10, 8), (11, 1), (12, 0), (14, 2)];
-/// Shapes every "LCEDA" row contains (L, C, E, D).
-const ROW_REQUIRED: [(usize, usize); 4] = [(6, 0), (10, 8), (12, 0), (10, 4)];
+/// Letters of the separate "LCEDA" row. It comes in two fonts: in one the "A"
+/// is (14, 2), (11, 1) or, on some models (C5832391), (13, 2); in the other
+/// (pin headers such as C124378) the letters are L (6, 0), C (11, 9), E (12, 0),
+/// D (13, 7) and A (11, 0).
+const ROW_LETTERS: [(usize, usize); 10] = [
+    (6, 0),
+    (10, 4),
+    (10, 8),
+    (11, 0),
+    (11, 1),
+    (11, 9),
+    (12, 0),
+    (13, 2),
+    (13, 7),
+    (14, 2),
+];
+/// Shapes every "LCEDA" row contains (L, C, E, D), one set per font.
+const ROW_REQUIRED: [[(usize, usize); 4]; 2] = [
+    [(6, 0), (10, 8), (12, 0), (10, 4)],
+    [(6, 0), (11, 9), (12, 0), (13, 7)],
+];
 
 /// What [`strip_logo`] took out.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -110,6 +140,12 @@ fn remove_logo(data: &[u8]) -> Result<(Vec<u8>, LogoRemoval), LogoOutcome> {
             return Err(LogoOutcome::NotFound);
         }
         icon_faces = geometry.faces_beside(&pieces, &selected);
+    } else if !selected.iter().any(|&i| shape_like(&pieces[i], ICON)) {
+        // Words found without their icon: on a bulged body (C249170) the flat
+        // icon cuts through the edge of the face under it, so it is no relief
+        // of its own. The faces beside the words in the words' own colour, as
+        // many as an icon has, are the icon.
+        icon_faces = geometry.icon_beside(&pieces, &selected);
     }
     let base_face = selected
         .iter()
@@ -117,6 +153,28 @@ fn remove_logo(data: &[u8]) -> Result<(Vec<u8>, LogoRemoval), LogoOutcome> {
     let mut dead: HashSet<u64> = HashSet::new();
     let mut loops: Vec<(u64, u64)> = Vec::new();
     let mut removal = LogoRemoval::default();
+    // Some models (C496552) make every letter a solid of its own standing on the
+    // body: the face a letter was found from is that solid's own floor, and the
+    // letter plus its floor are a whole closed shell. Such a letter goes with its
+    // solid; cutting the floor's loop would leave an open shell.
+    let mut shell_of_face: HashMap<u64, u64> = HashMap::new();
+    let mut solid_of_shell: HashMap<u64, u64> = HashMap::new();
+    for entity in &model.entities {
+        match entity.kind.as_str() {
+            "CLOSED_SHELL" => {
+                for &face in &entity.refs {
+                    shell_of_face.insert(face, entity.id);
+                }
+            }
+            "MANIFOLD_SOLID_BREP" => {
+                if let Some(&shell) = entity.refs.first() {
+                    solid_of_shell.insert(shell, entity.id);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut letter_solids: Vec<(Point, Point)> = Vec::new();
     for &index in &selected {
         let piece = &pieces[index];
         removal.pieces += 1;
@@ -126,7 +184,41 @@ fn remove_logo(data: &[u8]) -> Result<(Vec<u8>, LogoRemoval), LogoOutcome> {
             dead.insert(solid);
             dead.extend(model.refs(solid));
         }
-        loops.extend(piece.loops.iter().copied());
+        let floors: HashSet<u64> = piece.loops.iter().map(|&(face, _)| face).collect();
+        let own_solid = piece.solid.is_none().then(|| {
+            floors.iter().find_map(|floor| {
+                let shell = *shell_of_face.get(floor)?;
+                let faces = model.refs(shell);
+                let whole = faces
+                    .iter()
+                    .all(|f| piece.faces.contains(f) || floors.contains(f));
+                if !whole {
+                    return None;
+                }
+                Some((*solid_of_shell.get(&shell)?, faces))
+            })
+        });
+        match own_solid.flatten() {
+            Some((solid, faces)) => {
+                dead.insert(solid);
+                dead.extend(model.refs(solid));
+                dead.extend(faces);
+                letter_solids.push((piece.lo, piece.hi));
+            }
+            None => loops.extend(piece.loops.iter().copied()),
+        }
+    }
+    // The rest of such a logo: letters whose floor has no inner loop are never
+    // found as pieces, but they are small solids standing in the same strip.
+    for solid in logo_solid_neighbours(&model, &geometry, &letter_solids, &dead) {
+        removal.pieces += 1;
+        dead.insert(solid);
+        for shell in model.refs(solid) {
+            let faces = model.refs(shell);
+            removal.faces += faces.len();
+            dead.extend(faces);
+            dead.insert(shell);
+        }
     }
     // Letters that straddle the seam of a split face (round bodies) are part of
     // its outline rather than holes in it, so they cannot be cut out: give what
@@ -210,8 +302,71 @@ fn remove_logo(data: &[u8]) -> Result<(Vec<u8>, LogoRemoval), LogoOutcome> {
     Ok((out, removal))
 }
 
-// ---------------------------------------------------------------------------
-// STEP text
+/// Solids that belong to a logo made of letter solids: once two or more of its
+/// letters were recognised (`letters`, their bounds), every other small solid
+/// standing in the same strip (as thin along the strip's normal, inside its
+/// extent widened by a letter height, no larger than the largest letter) is a
+/// letter too. The largest solid, the body, is never one.
+fn logo_solid_neighbours(
+    model: &Model,
+    geometry: &Geometry,
+    letters: &[(Point, Point)],
+    dead: &HashSet<u64>,
+) -> Vec<u64> {
+    if letters.len() < 2 {
+        return Vec::new();
+    }
+    let (mut lo, mut hi) = letters[0];
+    let mut largest: f64 = 0.0;
+    for &(l, h) in letters {
+        for a in 0..3 {
+            lo[a] = lo[a].min(l[a]);
+            hi[a] = hi[a].max(h[a]);
+        }
+        largest = largest.max((0..3).map(|a| h[a] - l[a]).fold(0.0, f64::max));
+    }
+    // The strip's normal: the axis the letters are thinnest along together.
+    let axis = (0..3)
+        .min_by(|&a, &b| (hi[a] - lo[a]).total_cmp(&(hi[b] - lo[b])))
+        .unwrap_or(2);
+    if hi[axis] - lo[axis] > MAX_RELIEF_MM + PLANE_TOLERANCE_MM {
+        return Vec::new();
+    }
+    let mut solids: Vec<(u64, usize, Point, Point)> = Vec::new();
+    for entity in &model.entities {
+        if entity.kind != "MANIFOLD_SOLID_BREP" {
+            continue;
+        }
+        let faces: HashSet<u64> = entity
+            .refs
+            .iter()
+            .flat_map(|&shell| model.refs(shell))
+            .collect();
+        if let Some((l, h)) = bounds(&geometry.face_points(&faces)) {
+            solids.push((entity.id, faces.len(), l, h));
+        }
+    }
+    let volume = |l: Point, h: Point| (0..3).map(|a| (h[a] - l[a]).max(0.0)).product::<f64>();
+    let body = solids
+        .iter()
+        .max_by(|a, b| volume(a.2, a.3).total_cmp(&volume(b.2, b.3)))
+        .map(|s| s.0);
+    let margin = largest;
+    solids
+        .into_iter()
+        .filter(|&(id, _, l, h)| {
+            Some(id) != body
+                && !dead.contains(&id)
+                && (0..3).map(|a| h[a] - l[a]).fold(0.0, f64::max) <= largest * 1.2
+                && l[axis] >= lo[axis] - PLANE_TOLERANCE_MM
+                && h[axis] <= hi[axis] + PLANE_TOLERANCE_MM
+                && (0..3)
+                    .filter(|&a| a != axis)
+                    .all(|a| l[a] >= lo[a] - margin && h[a] <= hi[a] + margin)
+        })
+        .map(|(id, ..)| id)
+        .collect()
+}
 
 struct Entity {
     id: u64,
@@ -585,12 +740,15 @@ struct Geometry<'a> {
     edge_faces: HashMap<u64, Vec<u64>>,
 }
 
-/// A logo candidate: one relief feature or one thin solid.
+/// A round face a logo can be cut into: a cylinder or, with `tube`, a torus
+/// (the rounded rim of a varistor's or capacitor's disc, C49072852) whose
+/// `radius` is the distance of the tube's centre from the axis.
 #[derive(Clone, Copy, Debug)]
 struct Cylinder {
     origin: Point,
     axis: Point,
     radius: f64,
+    tube: Option<f64>,
 }
 
 impl Cylinder {
@@ -609,28 +767,67 @@ impl Cylinder {
         dot(r, r).sqrt()
     }
 
+    /// Distance of `p` from the surface.
     fn depth(&self, p: Point) -> f64 {
-        (self.distance(p) - self.radius).abs()
+        match self.tube {
+            None => (self.distance(p) - self.radius).abs(),
+            Some(tube) => {
+                let along = dot(sub(p, self.origin), self.axis);
+                ((self.distance(p) - self.radius).hypot(along) - tube).abs()
+            }
+        }
     }
 
-    /// Same axis line (the radius may differ).
+    /// Same axis line (the radius may differ); a torus also the same centre and
+    /// the same distance of its tube from the axis, so the floor or top of a
+    /// letter on it counts as part of the surface.
     fn coaxial(&self, other: &Cylinder) -> bool {
-        dot(self.axis, other.axis).abs() > 0.999
-            && self.distance(other.origin) <= PLANE_TOLERANCE_MM
+        let same_axis = dot(self.axis, other.axis).abs() > 0.999
+            && self.distance(other.origin) <= PLANE_TOLERANCE_MM;
+        match (self.tube, other.tube) {
+            (None, None) => same_axis,
+            (Some(_), Some(_)) => {
+                same_axis
+                    && dot(sub(other.origin, self.origin), self.axis).abs() <= PLANE_TOLERANCE_MM
+                    && (self.radius - other.radius).abs() <= PLANE_TOLERANCE_MM
+            }
+            _ => false,
+        }
+    }
+
+    /// Same surface, or one a relief's height away from it.
+    fn concentric(&self, other: &Cylinder) -> bool {
+        self.coaxial(other)
+            && match (self.tube, other.tube) {
+                (Some(a), Some(b)) => (a - b).abs() <= PLANE_TOLERANCE_MM,
+                _ => (self.radius - other.radius).abs() <= PLANE_TOLERANCE_MM,
+            }
     }
 
     /// Outward unit direction at `p`.
     fn radial(&self, p: Point) -> Option<Point> {
         let v = sub(p, self.origin);
         let along = dot(v, self.axis);
-        unit(sub(
+        let out = unit(sub(
             v,
             [
                 self.axis[0] * along,
                 self.axis[1] * along,
                 self.axis[2] * along,
             ],
-        ))
+        ))?;
+        match self.tube {
+            None => Some(out),
+            Some(_) => {
+                // From the centre of the tube under `p`.
+                let core = [
+                    self.origin[0] + out[0] * self.radius,
+                    self.origin[1] + out[1] * self.radius,
+                    self.origin[2] + out[2] * self.radius,
+                ];
+                unit(sub(p, core))
+            }
+        }
     }
 }
 
@@ -646,6 +843,10 @@ struct Piece {
     offset: f64,
     /// The cylinder the piece is cut into, when it is not on a flat face.
     cylinder: Option<Cylinder>,
+    /// The free-form face (a bulged capacitor disc, C249170) the piece is cut
+    /// into, when it is neither flat nor round; `normal` and `offset` are then
+    /// the plane of the piece's own outline.
+    freeform: Option<u64>,
     /// Height of the relief / depth of the engraving (thickness of a thin solid).
     depth: f64,
     lo: Point,
@@ -690,6 +891,15 @@ impl<'a> Geometry<'a> {
     /// Origin and unit normal of a planar face.
     fn plane(&self, face: u64) -> Option<(Point, Point)> {
         let surface = face_surface(self.model, face)?;
+        if self.model.kind(surface).starts_with("B_SPLINE_SURFACE") {
+            // A side face of a flush letter (C474881) is a strip of no height:
+            // its control points lie in the face it borders, but it is no flat
+            // face of its own.
+            if self.is_strip(face) {
+                return None;
+            }
+            return self.flat_spline(surface);
+        }
         if self.model.kind(surface) != "PLANE" {
             return None;
         }
@@ -700,13 +910,46 @@ impl<'a> Geometry<'a> {
         Some((origin, normal))
     }
 
-    /// Axis and radius of a cylindrical face.
+    /// A B-spline surface whose control points all lie in one plane (some models,
+    /// C386757, store flat faces that way): a point of it and its unit normal.
+    fn flat_spline(&self, surface: u64) -> Option<(Point, Point)> {
+        let points: Vec<Point> = self
+            .model
+            .refs(surface)
+            .into_iter()
+            .filter(|&r| self.model.kind(r) == "CARTESIAN_POINT")
+            .filter_map(|r| self.point(r))
+            .collect();
+        let origin = *points.first()?;
+        let far = points
+            .iter()
+            .copied()
+            .max_by(|a, b| norm(sub(*a, origin)).total_cmp(&norm(sub(*b, origin))))?;
+        let u = unit(sub(far, origin))?;
+        let normal = points.iter().find_map(|p| {
+            let n = cross(u, sub(*p, origin));
+            (norm(n) > 1e-3 * norm(sub(far, origin)).max(1e-9))
+                .then(|| unit(n))
+                .flatten()
+        })?;
+        points
+            .iter()
+            .all(|p| dot(sub(*p, origin), normal).abs() <= 1e-4)
+            .then_some((origin, normal))
+    }
+
+    /// Axis and radius of a cylindrical or toroidal face.
     fn cylinder(&self, face: u64) -> Option<Cylinder> {
         let surface = face_surface(self.model, face)?;
-        if self.model.kind(surface) != "CYLINDRICAL_SURFACE" {
-            return None;
-        }
-        let radius = *numbers(self.model.body(surface)?).last()?;
+        let values = numbers(self.model.body(surface)?);
+        let (radius, tube) = match self.model.kind(surface) {
+            "CYLINDRICAL_SURFACE" => (*values.last()?, None),
+            "TOROIDAL_SURFACE" => match values.as_slice() {
+                [.., major, minor] => (*major, Some(*minor)),
+                _ => return None,
+            },
+            _ => return None,
+        };
         let placement = *self.model.refs(surface).first()?;
         let refs = self.model.refs(placement);
         let origin = self.point(*refs.first()?)?;
@@ -715,6 +958,7 @@ impl<'a> Geometry<'a> {
             origin,
             axis,
             radius,
+            tube,
         })
     }
 
@@ -743,12 +987,53 @@ impl<'a> Geometry<'a> {
                 let axis = (0..3)
                     .min_by(|&a, &b| extent[a].total_cmp(&extent[b]))
                     .unwrap_or(2);
-                if extent[axis] > MAX_THIN_SOLID_MM {
-                    continue;
-                }
+                // Two faces of a flat sheet face along its thin axis; a sheet on
+                // a tilted face (C8678) is thin along no axis and is found from
+                // the face it lies on instead.
+                let flat_sheet = extent[axis] <= MAX_FLAT_SOLID_MM
+                    && faces
+                        .iter()
+                        .filter(|&&face| {
+                            self.plane(face).is_some_and(|(_, n)| n[axis].abs() > 0.999)
+                        })
+                        .count()
+                        >= 2;
+                let (axis, shape) = if extent[axis] <= MAX_THIN_SOLID_MM || flat_sheet {
+                    let mut normal = [0.0; 3];
+                    normal[axis] = 1.0;
+                    (axis, self.shape(&faces, normal))
+                } else {
+                    // Some models (varistors, C49069733) make each logo letter a
+                    // small solid extruded deep into the body: a letter seen along
+                    // its extrusion axis has one of the logo's outlines.
+                    if extent.iter().copied().fold(0.0, f64::max) > MAX_LOGO_SOLID_MM {
+                        continue;
+                    }
+                    // The extrusion axis: every face but the two caps runs along it.
+                    // Curved sides run along more than one axis, so the deepest
+                    // axis is tried first.
+                    let mut axes = [0usize, 1, 2];
+                    axes.sort_by(|&a, &b| extent[b].total_cmp(&extent[a]));
+                    let found = axes.into_iter().find_map(|axis| {
+                        let mut normal = [0.0; 3];
+                        normal[axis] = 1.0;
+                        let shape = self.shape(&faces, normal);
+                        // Shallower letters are reliefs, found through the loops
+                        // of the face they stand on.
+                        (extent[axis] > MAX_RELIEF_MM
+                            && shape.0 + 2 == faces.len()
+                            && (shape == ICON
+                                || LOGO_LETTERS.contains(&shape)
+                                || ROW_LETTERS.contains(&shape)))
+                        .then_some((axis, shape))
+                    });
+                    match found {
+                        Some(found) => found,
+                        None => continue,
+                    }
+                };
                 let mut normal = [0.0; 3];
                 normal[axis] = 1.0;
-                let shape = self.shape(&faces, normal);
                 solid_faces.extend(faces.iter().copied());
                 pieces.push(Piece {
                     faces,
@@ -757,6 +1042,7 @@ impl<'a> Geometry<'a> {
                     normal,
                     offset: (lo[axis] + hi[axis]) / 2.0,
                     cylinder: None,
+                    freeform: None,
                     depth: extent[axis],
                     lo,
                     hi,
@@ -785,20 +1071,38 @@ impl<'a> Geometry<'a> {
             } else {
                 None
             };
-            if plane.is_none() && cylinder.is_none() {
-                continue;
-            }
             for bound in inner {
                 let Some(faces) = self.flood(face, bound) else {
                     continue;
                 };
                 let points = self.face_points(&faces);
-                let depth_of = |p: &Point| match (plane, cylinder) {
-                    (Some((origin, normal)), _) => dot(sub(*p, origin), normal).abs(),
-                    (None, Some(c)) => c.depth(*p),
+                let deepest = |depth_of: &dyn Fn(&Point) -> f64| {
+                    points.iter().map(depth_of).fold(0.0, f64::max)
+                };
+                // EasyEDA's logo is flat. On a flat face it is measured from the
+                // face, on a round one from the surface; where a flat logo cannot
+                // follow the surface (a bulged disc, C249170, or the rim around
+                // it), it is measured from the plane of its own outline, allowing
+                // for the outline's bend, and is then a piece on a free-form face.
+                let mut round = cylinder;
+                let mut local = None;
+                let depth = match (plane, cylinder) {
+                    (Some((origin, normal)), _) => {
+                        deepest(&|p: &Point| dot(sub(*p, origin), normal).abs())
+                    }
+                    (None, Some(c)) => deepest(&|p: &Point| c.depth(*p)),
                     _ => f64::MAX,
                 };
-                let depth = points.iter().map(depth_of).fold(0.0, f64::max);
+                let depth = if depth <= MAX_RELIEF_MM || plane.is_some() {
+                    depth
+                } else {
+                    let Some((origin, normal, bend)) = self.loop_plane(bound) else {
+                        continue;
+                    };
+                    round = None;
+                    local = Some((origin, normal));
+                    (deepest(&|p: &Point| dot(sub(*p, origin), normal).abs()) - bend).max(0.0)
+                };
                 if depth > MAX_RELIEF_MM {
                     continue;
                 }
@@ -809,9 +1113,10 @@ impl<'a> Geometry<'a> {
                     same.loops.push((face, bound));
                     continue;
                 }
-                let (normal, offset) = match (plane, cylinder) {
-                    (Some((origin, normal)), _) => (normal, dot(origin, normal)),
-                    (None, Some(c)) => {
+                let (normal, offset) = match (plane, round, local) {
+                    (Some((origin, normal)), _, _) => (normal, dot(origin, normal)),
+                    (None, None, Some((origin, normal))) => (normal, dot(origin, normal)),
+                    (None, Some(c), _) => {
                         let centre = [
                             (lo[0] + hi[0]) / 2.0,
                             (lo[1] + hi[1]) / 2.0,
@@ -824,14 +1129,15 @@ impl<'a> Geometry<'a> {
                     }
                     _ => continue,
                 };
-                let shape = self.shape_on(&faces, normal, cylinder);
+                let shape = self.shape_on(&faces, normal, round);
                 features.push(Piece {
                     faces,
                     loops: vec![(face, bound)],
                     solid: None,
                     normal,
                     offset,
-                    cylinder,
+                    cylinder: round,
+                    freeform: local.map(|_| face),
                     depth,
                     lo,
                     hi,
@@ -847,14 +1153,23 @@ impl<'a> Geometry<'a> {
                 && f.faces.is_subset(&g.faces)
                 && (g.depth - f.depth).abs() <= 0.005
         };
-        let outer: Vec<bool> = features
+        // A plate that holds several such pieces (an exposed pad with "LCEDA"
+        // cut into it, C2655153) is no letter: what it holds stays a piece of its
+        // own, and only a letter's own islands go to that letter.
+        let held: Vec<usize> = features
             .iter()
-            .map(|f| !features.iter().any(|g| holds(g, f)))
+            .map(|g| features.iter().filter(|f| holds(g, f)).count())
             .collect();
+        let holder = |f: &Piece| {
+            (0..features.len())
+                .filter(|&j| held[j] < 3 && holds(&features[j], f))
+                .min_by_key(|&j| features[j].faces.len())
+        };
+        let outer: Vec<bool> = features.iter().map(|f| holder(f).is_none()).collect();
         let mut nested_loops: Vec<(usize, Vec<(u64, u64)>)> = Vec::new();
         for (i, f) in features.iter().enumerate() {
             if !outer[i] {
-                if let Some(j) = features.iter().position(|g| holds(g, f)) {
+                if let Some(j) = holder(f) {
                     nested_loops.push((j, f.loops.clone()));
                 }
             }
@@ -875,6 +1190,11 @@ impl<'a> Geometry<'a> {
     /// Small faces in the plane of the words `words` (within relief depth) close
     /// to them: the logo icon when it is not a separate relief.
     fn faces_beside(&self, pieces: &[Piece], words: &[usize]) -> HashSet<u64> {
+        self.faces_beside_within(pieces, words, MAX_RELIEF_MM)
+    }
+
+    /// [`Self::faces_beside`] for faces up to `depth` off the words' surface.
+    fn faces_beside_within(&self, pieces: &[Piece], words: &[usize], depth: f64) -> HashSet<u64> {
         let first = &pieces[words[0]];
         let (normal, offset, cylinder) = (first.normal, first.offset, first.cylinder);
         let (mut lo, mut hi) = (first.lo, first.hi);
@@ -906,8 +1226,8 @@ impl<'a> Geometry<'a> {
                 && points.iter().all(|p| {
                     (0..3).all(|a| p[a] >= lo[a] && p[a] <= hi[a])
                         && match cylinder {
-                            Some(c) => c.depth(*p) <= MAX_RELIEF_MM,
-                            None => (dot(*p, normal) - offset).abs() <= MAX_RELIEF_MM,
+                            Some(c) => c.depth(*p) <= depth,
+                            None => (dot(*p, normal) - offset).abs() <= depth,
                         }
                 })
             {
@@ -915,6 +1235,39 @@ impl<'a> Geometry<'a> {
             }
         }
         found
+    }
+
+    /// The logo icon next to words found without it: the faces beside them (see
+    /// [`Self::faces_beside`]) coloured like the words, when they are about as
+    /// many as an icon has. Nothing otherwise.
+    fn icon_beside(&self, pieces: &[Piece], words: &[usize]) -> HashSet<u64> {
+        let Some(colour) = words
+            .iter()
+            .flat_map(|&i| pieces[i].faces.iter())
+            .find_map(|&face| face_colour(self.model, face))
+        else {
+            return HashSet::new();
+        };
+        // Letters that are reliefs of their own are not the icon.
+        let lettered: HashSet<u64> = pieces
+            .iter()
+            .flat_map(|p| p.faces.iter().copied())
+            .collect();
+        // A flat icon on a bulged face stands up to half a millimetre off it;
+        // the colour keeps the body's own faces out.
+        let candidates: HashSet<u64> = self
+            .faces_beside_within(pieces, words, 0.6)
+            .into_iter()
+            .filter(|face| !lettered.contains(face))
+            .filter(|&face| face_colour(self.model, face) == Some(colour))
+            .collect();
+        // The icon (and any letters that were not reliefs of their own) is a few
+        // dozen faces; many more would be part of the body.
+        if candidates.len() >= ICON.0 / 2 && candidates.len() <= 4 * ICON.0 {
+            candidates
+        } else {
+            HashSet::new()
+        }
     }
 
     /// Faces reached from the inner loop `bound` of `face` without crossing it.
@@ -936,6 +1289,74 @@ impl<'a> Geometry<'a> {
             }
         }
         (!found.is_empty()).then_some(found)
+    }
+
+    /// A face whose outline encloses next to nothing for its size: a strip of
+    /// no height, its two long edges on top of each other.
+    fn is_strip(&self, face: u64) -> bool {
+        let one: HashSet<u64> = [face].into_iter().collect();
+        let Some((lo, hi)) = bounds(&self.face_points(&one)) else {
+            return false;
+        };
+        let size = (0..3).map(|a| hi[a] - lo[a]).fold(0.0, f64::max);
+        self.outline_area(face) < 0.01 * size * size
+    }
+
+    /// Area enclosed by a face's outline (its corners in edge order).
+    fn outline_area(&self, face: u64) -> f64 {
+        let mut points: Vec<Point> = Vec::new();
+        for edge in face_edges(self.model, face) {
+            for vertex in self.model.refs(edge).into_iter().take(2) {
+                if let Some(p) = self.model.refs(vertex).first().and_then(|&p| self.point(p)) {
+                    if points.last().is_none_or(|q| norm(sub(*q, p)) > 1e-9) {
+                        points.push(p);
+                    }
+                }
+            }
+        }
+        let mut normal = [0.0; 3];
+        for (i, a) in points.iter().enumerate() {
+            let b = points[(i + 1) % points.len()];
+            normal[0] += (a[1] - b[1]) * (a[2] + b[2]);
+            normal[1] += (a[2] - b[2]) * (a[0] + b[0]);
+            normal[2] += (a[0] - b[0]) * (a[1] + b[1]);
+        }
+        norm(normal) / 2.0
+    }
+
+    /// The plane of an inner loop's outline: a point of it, its unit normal
+    /// (Newell's method) and how far the outline itself strays from it.
+    fn loop_plane(&self, bound: u64) -> Option<(Point, Point, f64)> {
+        let mut points: Vec<Point> = Vec::new();
+        for edge in bound_edges(self.model, bound) {
+            for vertex in self.model.refs(edge).into_iter().take(2) {
+                if let Some(p) = self.model.refs(vertex).first().and_then(|&p| self.point(p)) {
+                    if !points.iter().any(|q| norm(sub(*q, p)) < 1e-9) {
+                        points.push(p);
+                    }
+                }
+            }
+        }
+        if points.len() < 3 {
+            return None;
+        }
+        let n = points.len() as f64;
+        let centre = [0, 1, 2].map(|a| points.iter().map(|p| p[a]).sum::<f64>() / n);
+        // Newell's normal needs the outline in order; with the corners of a loop
+        // in edge order (as here) it is the outline's plane.
+        let mut normal = [0.0; 3];
+        for (i, a) in points.iter().enumerate() {
+            let b = points[(i + 1) % points.len()];
+            normal[0] += (a[1] - b[1]) * (a[2] + b[2]);
+            normal[1] += (a[2] - b[2]) * (a[0] + b[0]);
+            normal[2] += (a[0] - b[0]) * (a[1] + b[1]);
+        }
+        let normal = unit(normal)?;
+        let bend = points
+            .iter()
+            .map(|p| dot(sub(*p, centre), normal).abs())
+            .fold(0.0, f64::max);
+        Some((centre, normal, bend))
     }
 
     /// (side faces, curved side faces): faces not parallel to the base plane.
@@ -974,6 +1395,30 @@ impl<'a> Geometry<'a> {
         }
         (sides, curved)
     }
+}
+
+/// A face's colour (its STYLED_ITEM's COLOUR_RGB), in thousandths.
+fn face_colour(model: &Model, face: u64) -> Option<[i64; 3]> {
+    let styled = model
+        .entities
+        .iter()
+        .find(|e| e.kind == "STYLED_ITEM" && e.refs.last() == Some(&face))?;
+    let mut stack: Vec<u64> = styled.refs[..styled.refs.len() - 1].to_vec();
+    let mut seen: HashSet<u64> = HashSet::new();
+    while let Some(id) = stack.pop() {
+        if !seen.insert(id) || seen.len() > 64 {
+            continue;
+        }
+        if model.kind(id) == "COLOUR_RGB" {
+            let values = numbers(model.body(id)?);
+            if let [r, g, b] = values.as_slice()[values.len().saturating_sub(3)..] {
+                return Some([r, g, b].map(|v| (v * 1000.0).round() as i64));
+            }
+            return None;
+        }
+        stack.extend(model.refs(id));
+    }
+    None
 }
 
 /// Gives `faces` the colour of `like`: their STYLED_ITEMs take its styles.
@@ -1114,7 +1559,62 @@ fn select_logo(pieces: &[Piece]) -> Vec<usize> {
         }
         seen.extend(group.iter().copied());
         let shapes: Vec<(usize, usize)> = group.iter().map(|&i| pieces[i].shape).collect();
-        if group.len() == 5 && ROW_REQUIRED.iter().all(|s| shapes.contains(s)) {
+        if group.len() == 5
+            && ROW_REQUIRED
+                .iter()
+                .any(|font| font.iter().all(|s| shapes.contains(s)))
+        {
+            chosen.extend(group);
+        }
+    }
+    // "LCEDA" rows in other fonts (C8436 draws its curves as straight segments):
+    // five letters of one size in a row whose end letter is an L and whose
+    // middle one an E, the two shapes every font draws alike.
+    let rest: Vec<usize> = (0..pieces.len())
+        .filter(|&i| !chosen.contains(&i) && pieces[i].solid.is_none())
+        .collect();
+    let size = |p: &Piece| (0..3).map(|a| p.hi[a] - p.lo[a]).fold(0.0, f64::max);
+    let mut seen: HashSet<usize> = HashSet::new();
+    for &start in &rest {
+        if seen.contains(&start) {
+            continue;
+        }
+        let height = size(&pieces[start]);
+        let mut group = vec![start];
+        let mut k = 0;
+        while k < group.len() && group.len() <= 5 {
+            let current = &pieces[group[k]];
+            for &other in &rest {
+                let p = &pieces[other];
+                if !group.contains(&other)
+                    && (size(p) - height).abs() <= 0.25 * height
+                    && coplanar(p, current)
+                    && gap(p, current) <= 0.6 * height
+                {
+                    group.push(other);
+                }
+            }
+            k += 1;
+        }
+        seen.extend(group.iter().copied());
+        if group.len() != 5 {
+            continue;
+        }
+        // Along the row: the axis the letters' centres spread over most.
+        let centre = |i: usize, a: usize| (pieces[i].lo[a] + pieces[i].hi[a]) / 2.0;
+        let axis = (0..3)
+            .max_by(|&a, &b| {
+                let spread = |a: usize| {
+                    let v: Vec<f64> = group.iter().map(|&i| centre(i, a)).collect();
+                    v.iter().copied().fold(f64::MIN, f64::max)
+                        - v.iter().copied().fold(f64::MAX, f64::min)
+                };
+                spread(a).total_cmp(&spread(b))
+            })
+            .unwrap_or(0);
+        group.sort_by(|&a, &b| centre(a, axis).total_cmp(&centre(b, axis)));
+        let is = |i: usize, shape: (usize, usize)| shape_like(&pieces[i], shape);
+        if is(group[2], (12, 0)) && (is(group[0], (6, 0)) || is(group[4], (6, 0))) {
             chosen.extend(group);
         }
     }
@@ -1126,16 +1626,32 @@ fn select_logo(pieces: &[Piece]) -> Vec<usize> {
 /// Whether `piece` has the logo shape `shape` (side faces, curved side faces).
 /// Cut into a cylinder, outlines split into a few more faces than on a flat face.
 fn shape_like(piece: &Piece, shape: (usize, usize)) -> bool {
-    if piece.cylinder.is_none() {
-        return piece.shape == shape;
+    // On a free-form face the letters' tops and sides are free-form too: only
+    // the number of faces tells (the top counts as one more).
+    if piece.freeform.is_some() {
+        return piece.shape.0.abs_diff(shape.0 + 1) <= 2;
     }
-    piece.shape.0.abs_diff(shape.0) <= 2 && piece.shape.1.abs_diff(shape.1) <= 3
+    match piece.cylinder {
+        None => piece.shape == shape,
+        // On a torus every side is a free-form surface: only their number tells.
+        Some(Cylinder { tube: Some(_), .. }) => piece.shape.0.abs_diff(shape.0) <= 2,
+        Some(_) => piece.shape.0.abs_diff(shape.0) <= 2 && piece.shape.1.abs_diff(shape.1) <= 3,
+    }
 }
 
 fn coplanar(a: &Piece, b: &Piece) -> bool {
+    if a.freeform.is_some() || b.freeform.is_some() {
+        // Both on free-form faces (one bulged face may be split into several),
+        // facing the same way, at the same level give or take its bulge.
+        let d = dot(a.normal, b.normal);
+        return a.freeform.is_some()
+            && b.freeform.is_some()
+            && d.abs() > 0.95
+            && (a.offset - d.signum() * b.offset).abs() <= 0.1;
+    }
     match (a.cylinder, b.cylinder) {
         (Some(ca), Some(cb)) => {
-            return ca.coaxial(&cb) && (ca.radius - cb.radius).abs() <= PLANE_TOLERANCE_MM;
+            return ca.concentric(&cb);
         }
         (None, None) => {}
         _ => return false,
@@ -1169,6 +1685,18 @@ fn bounds(points: &[Point]) -> Option<(Point, Point)> {
 
 fn dot(a: Point, b: Point) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+fn cross(a: Point, b: Point) -> Point {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
+fn norm(a: Point) -> f64 {
+    dot(a, a).sqrt()
 }
 
 fn sub(a: Point, b: Point) -> Point {
@@ -1241,5 +1769,36 @@ mod tests {
         assert_eq!(recolour(&mut model, &faces, 1), 1);
         assert_eq!(model.body(4), Some("STYLED_ITEM ( 'NONE', ( #7 ), #2 )"));
         assert_eq!(model.refs(4), vec![7, 2]);
+    }
+
+    /// Every EasyEDA model in `$SEEX_LOGO_MODELS` comes out without a logo: a
+    /// second pass over the cleaned model finds nothing left to remove.
+    /// `SEEX_LOGO_MODELS=<folder> cargo test models_lose_their_logo -- --ignored`.
+    #[test]
+    #[ignore = "needs downloaded EasyEDA models"]
+    fn models_lose_their_logo() {
+        let dir = std::env::var("SEEX_LOGO_MODELS").expect("SEEX_LOGO_MODELS");
+        let mut checked = 0;
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().and_then(|e| e.to_str()) != Some("step") {
+                continue;
+            }
+            let data = std::fs::read(&path).unwrap();
+            let (Some(clean), outcome) = strip_logo(&data) else {
+                println!("{}: nothing removed", path.display());
+                continue;
+            };
+            let (_, again) = strip_logo(&clean);
+            println!("{}: {outcome:?}, second pass {again:?}", path.display());
+            assert_eq!(
+                again,
+                LogoOutcome::NotFound,
+                "{}: logo left",
+                path.display()
+            );
+            checked += 1;
+        }
+        assert!(checked > 0);
     }
 }
