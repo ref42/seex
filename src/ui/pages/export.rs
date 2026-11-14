@@ -115,11 +115,7 @@ impl SeexUi {
                     .child(self.export_settings_panel(window, cx)),
             )
             .child(div().h(px(10.0)))
-            .child(if self.pads.open && self.cadence_target() {
-                self.pads_section(window, cx)
-            } else {
-                self.failed_ids_panel(cx)
-            })
+            .child(self.failed_ids_panel(cx))
             .into_any_element()
     }
 
@@ -137,7 +133,7 @@ impl SeexUi {
             theme::muted()
         };
 
-        let mut header = div()
+        let header = div()
             .flex()
             .flex_row()
             .items_center()
@@ -150,26 +146,15 @@ impl SeexUi {
                     .child(locale::t("Failed IDs", "失败 ID")),
             )
             .child(components::count_chip(count, accent))
-            .child(div().flex_1());
-        if self.cadence_target() {
-            header = header.child(components::button(
-                "open-pad-generator",
-                locale::t("Pad generator", "焊盘生成器"),
-                true,
+            .child(div().flex_1())
+            .child(components::button(
+                "copy-failed-ids",
+                locale::t("Copy IDs", "复制 ID"),
+                count > 0,
                 cx.listener(|this, _event: &ClickEvent, _window, cx| {
-                    this.pads.open = true;
-                    cx.notify();
+                    this.copy_failed_ids(cx);
                 }),
             ));
-        }
-        let header = header.child(components::button(
-            "copy-failed-ids",
-            locale::t("Copy IDs", "复制 ID"),
-            count > 0,
-            cx.listener(|this, _event: &ClickEvent, _window, cx| {
-                this.copy_failed_ids(cx);
-            }),
-        ));
 
         let mut body = div()
             .flex()
@@ -209,14 +194,6 @@ impl SeexUi {
         }
 
         components::section_fill(body).into_any_element()
-    }
-
-    /// Whether the Export page is set to Cadence, the target the pad generator
-    /// writes into.
-    pub(crate) fn cadence_target(&self) -> bool {
-        self.state
-            .lock()
-            .is_ok_and(|state| state.export_target == "cadence")
     }
 
     /// The ids the last export failed on.

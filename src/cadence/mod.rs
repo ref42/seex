@@ -10,9 +10,7 @@
 //!   with `File > Import > Library XML` (see [`capture`]);
 //! * footprints as Allegro **SKILL** scripts, one per footprint plus a library script
 //!   that builds them all into `.dra`, `.psm` and `.pad` files (see [`allegro`]);
-//! * 3D models as STEP files, which the footprints map;
-//! * padstacks, mounting holes, test points and fiducials from the pad generator
-//!   as more scripts in the same folder (see [`padgen`]).
+//! * 3D models as STEP files, which the footprints map.
 //!
 //! Lands follow IPC-7352 where SeEx can calculate them (see [`ipc7352`]); other
 //! footprints keep the manufacturer's lands with IPC-7352 courtyard and silkscreen
@@ -21,7 +19,6 @@
 pub mod allegro;
 pub mod capture;
 pub mod ipc7352;
-pub mod padgen;
 pub mod step_mesh;
 pub mod step_place;
 pub mod workflow;

@@ -6079,6 +6079,7 @@ dependencies = [
  "gpui-kit",
  "image",
  "log",
+ "pathfinder_simd",
  "regex",
  "reqwest",
  "resvg 0.49.0",

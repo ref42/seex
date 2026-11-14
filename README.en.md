@@ -37,7 +37,6 @@
 - Export `Allegro` footprints: one `SKILL` script per footprint plus one library script; run `skill load("<library>_allegro/<library>.il")` in the `Allegro PCB Editor` command window to generate the `.dra`, `.psm` and `.pad` files in the same folder.
 - Export `3D` models (`step`), with the model already mapped into the footprint at the position EasyEDA uses.
 - Standard packages (chip resistors and capacitors, `SOT`, `SOD`, `SOIC`, `QFN`, ...) get lands calculated per `IPC-7352` and checked against the manufacturer's; other packages keep the manufacturer's lands, with silkscreen, assembly layer and place bound generated per `IPC-7352`.
-- Pad generator (Export page, `Cadence` target): padstacks (SMD, through-hole, via, non-plated hole; round, square, rectangular, oblong, rounded or chamfered lands; slots, drill tolerance, inner-layer lands, anti-pads, thermal reliefs, mask and paste per side) and mounting-hole, test-point and fiducial footprints, named per the `IPC-7352` padstack convention. They are written as more scripts into `<library>_allegro`, and the same library script builds them.
 - `seex` itself calls no Cadence program; the import is done by you inside `Cadence`.
 
 ### Shared

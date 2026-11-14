@@ -34,6 +34,11 @@ thiserror = "2.0.21"
 tokio = { version = "1.54.1", features = ["macros", "rt-multi-thread", "sync", "time"] }
 gpui-kit = "=0.9.0"
 
+[target.'cfg(target_arch = "aarch64")'.dependencies]
+# Use Pathfinder's portable backend: its ARM LLVM intrinsics are incompatible
+# with current nightly Rust. Keep latest nightly and native SIMD on x86/x64.
+pathfinder_simd = { version = "0.5.6", features = ["pf-no-simd"] }
+
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 

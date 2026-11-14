@@ -133,26 +133,6 @@ impl CadenceLayout {
         self.allegro_dir.join(format!("{}.il", self.name))
     }
 
-    /// Padstack scripts of the pad generator, built before the footprints.
-    pub fn padstack_dir(&self) -> PathBuf {
-        self.allegro_dir.join("padstacks")
-    }
-
-    /// Writes the library script for every footprint and padstack script in the
-    /// library folder; nothing when there are none.
-    pub fn write_library_script(&self) -> Result<()> {
-        let footprints = self.footprint_scripts();
-        let padstacks = self.padstack_scripts();
-        if footprints.is_empty() && padstacks.is_empty() {
-            return Ok(());
-        }
-        fs::write(
-            self.library_script(),
-            library_script(&self.name, &self.allegro_dir, &footprints, &padstacks),
-        )?;
-        Ok(())
-    }
-
     fn footprint_script(&self, footprint: &str) -> PathBuf {
         self.allegro_dir.join(format!("{footprint}.il"))
     }
@@ -164,28 +144,17 @@ impl CadenceLayout {
     /// Footprint scripts in the library folder, sorted (the library script excluded).
     fn footprint_scripts(&self) -> Vec<String> {
         let library = self.name.to_ascii_lowercase();
-        let mut names = scripts_in(&self.allegro_dir);
-        names.retain(|stem| stem.to_ascii_lowercase() != library);
+        let mut names: Vec<String> = fs::read_dir(&self.allegro_dir)
+            .into_iter()
+            .flatten()
+            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+            .filter(|path| has_extension(path, "il"))
+            .filter_map(|path| Some(path.file_stem()?.to_str()?.to_string()))
+            .filter(|stem| stem.to_ascii_lowercase() != library)
+            .collect();
+        names.sort();
         names
     }
-
-    /// Padstack scripts in [`CadenceLayout::padstack_dir`], sorted.
-    fn padstack_scripts(&self) -> Vec<String> {
-        scripts_in(&self.padstack_dir())
-    }
-}
-
-/// Names of the `.il` scripts in `dir`, sorted.
-fn scripts_in(dir: &Path) -> Vec<String> {
-    let mut names: Vec<String> = fs::read_dir(dir)
-        .into_iter()
-        .flatten()
-        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-        .filter(|path| path.is_file() && has_extension(path, "il"))
-        .filter_map(|path| Some(path.file_stem()?.to_str()?.to_string()))
-        .collect();
-    names.sort();
-    names
 }
 
 fn has_extension(path: &Path, ext: &str) -> bool {
@@ -389,7 +358,13 @@ pub async fn export_cadence_batch(options: CadenceBatchOptions) -> Result<Cadenc
         )?;
     }
     if options.export.targets_footprint() {
-        layout.write_library_script()?;
+        let footprints = layout.footprint_scripts();
+        if !footprints.is_empty() {
+            fs::write(
+                layout.library_script(),
+                library_script(&layout.name, &layout.allegro_dir, &footprints),
+            )?;
+        }
     }
     summary.generated_files = generated_files(&layout, &options.export);
 

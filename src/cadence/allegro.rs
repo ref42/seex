@@ -33,10 +33,10 @@ const PLACE_BOUND_CLEARANCE_MM: f64 = 0.25;
 const MAX_SYMBOL_NAME: usize = 31;
 const MAX_PADSTACK_NAME: usize = 20;
 
-pub(crate) const SILK_TOP: &str = "PACKAGE GEOMETRY/SILKSCREEN_TOP";
+const SILK_TOP: &str = "PACKAGE GEOMETRY/SILKSCREEN_TOP";
 /// The silkscreen reference designator sits this far above the place bound (its
 /// baseline; Allegro anchors text at the baseline), centred over the part.
-pub(crate) const REFDES_GAP_MM: f64 = 0.3;
+const REFDES_GAP_MM: f64 = 0.3;
 
 // Line widths and text sizes follow the KiCad Library Conventions F5.1 / F5.2,
 // which put the IPC drawing layers into numbers:
@@ -72,9 +72,9 @@ pub fn silk_stroke(height: f64) -> f64 {
 pub const ASSEMBLY_TEXT_MIN_MM: f64 = 0.5;
 pub const ASSEMBLY_TEXT_MAX_MM: f64 = 1.0;
 /// Text block used for the silkscreen reference designator.
-pub(crate) const SILK_TEXT_BLOCK: u32 = 3;
+const SILK_TEXT_BLOCK: u32 = 3;
 /// Text block used for the assembly reference designator.
-pub(crate) const ASSEMBLY_TEXT_BLOCK: u32 = 2;
+const ASSEMBLY_TEXT_BLOCK: u32 = 2;
 /// Advance of one character as a fraction of the text height.
 const CHAR_ADVANCE: f64 = 0.9;
 
@@ -106,7 +106,7 @@ pub fn assembly_refdes_layout(
 const SILK_BOTTOM: &str = "PACKAGE GEOMETRY/SILKSCREEN_BOTTOM";
 const ASSY_TOP: &str = "PACKAGE GEOMETRY/ASSEMBLY_TOP";
 const ASSY_BOTTOM: &str = "PACKAGE GEOMETRY/ASSEMBLY_BOTTOM";
-pub(crate) const PLACE_BOUND_TOP: &str = "PACKAGE GEOMETRY/PLACE_BOUND_TOP";
+const PLACE_BOUND_TOP: &str = "PACKAGE GEOMETRY/PLACE_BOUND_TOP";
 
 /// A generated Allegro footprint script.
 #[derive(Debug, Clone)]
@@ -881,7 +881,7 @@ fn hundredths(mm: f64) -> String {
     format!("{}", (mm * 100.0).round() as i64)
 }
 
-pub(crate) fn fnv1a(text: &str) -> u32 {
+fn fnv1a(text: &str) -> u32 {
     let mut hash: u32 = 0x811c_9dc5;
     for byte in text.bytes() {
         hash ^= u32::from(byte);
@@ -1100,7 +1100,7 @@ fn points_list(points: &[(f64, f64)]) -> String {
 }
 
 /// SKILL float literal (always with a decimal point, 4 decimals).
-pub(crate) fn f(value: f64) -> String {
+fn f(value: f64) -> String {
     let value = if value.abs() < 5e-5 { 0.0 } else { value };
     format!("{value:.4}")
 }
@@ -1111,7 +1111,7 @@ fn skill_escape(text: &str) -> String {
 
 /// Shared SKILL helpers, embedded in every footprint script so each file is
 /// self-contained. All coordinates passed to them are millimetres, Y up.
-pub(crate) const HELPERS: &str = r#"
+const HELPERS: &str = r#"
 ;; ---------------------------------------------------------------- SeEx helpers
 seex_scale = 1.0
 seex_errors = 0
@@ -1417,29 +1417,19 @@ procedure( seex_finish(name)
 ;; ------------------------------------------------------------ end of helpers
 "#;
 
-/// The library script: loaded in Allegro PCB Editor, it builds every padstack
-/// script in `dir/padstacks` and every footprint script in `dir` into `.pad`,
-/// `.dra` and `.psm` files in `dir`.
+/// The library script: loaded in Allegro PCB Editor, it builds every footprint
+/// script in `dir` into `.dra`, `.psm` and `.pad` files in the same folder.
 ///
-/// Each padstack is made in a scratch drawing of its own, and each footprint
-/// gets a new package symbol drawing (`axlOpenDesign` creates one for a `.dra`
-/// name that does not exist yet; an older build is replaced). The folder is the
-/// one the export wrote to; when the library has been moved, the current working
-/// directory is used instead.
-pub fn library_script(
-    library: &str,
-    dir: &std::path::Path,
-    footprints: &[String],
-    padstacks: &[String],
-) -> String {
+/// Each footprint gets a new package symbol drawing (`axlOpenDesign` creates one
+/// for a `.dra` name that does not exist yet; an older build is replaced). The
+/// folder is the one the export wrote to; when the library has been moved, the
+/// current working directory is used instead.
+pub fn library_script(library: &str, dir: &std::path::Path, footprints: &[String]) -> String {
     let dir = skill_string(&dir.to_string_lossy().replace('\\', "/"));
-    let quoted = |names: &[String]| -> String {
-        names
-            .iter()
-            .map(|name| format!("\"{}\"", skill_string(name)))
-            .collect::<Vec<_>>()
-            .join(" ")
-    };
+    let names: Vec<String> = footprints
+        .iter()
+        .map(|name| format!("\"{}\"", skill_string(name)))
+        .collect();
     let mut script = String::new();
     let _ = writeln!(
         script,
@@ -1448,14 +1438,14 @@ pub fn library_script(
          ;; In Allegro PCB Editor (with any design open), type in the command window:\n\
          ;;     skill load(\"{dir}/{library}.il\")\n\
          ;; Every footprint script in this folder becomes <name>.dra, <name>.psm and its\n\
-         ;; .pad padstacks here, and every script in padstacks/ a .pad file. Then add this folder to PSMPATH and PADPATH, and the\n\
+         ;; .pad padstacks here. Then add this folder to PSMPATH and PADPATH, and the\n\
          ;; 3D model folder to STEPPATH (Setup > User Preferences > Paths > Library).\n\
          ;; Save your open design first: Allegro opens a new drawing for each footprint.\n"
     );
     let _ = writeln!(
         script,
-        "procedure( seex_build_library(dir names pads)
-  let( (home done made failed status design script)
+        "procedure( seex_build_library(dir names)
+  let( (home done failed status design)
     unless( isDir(dir)
       dir = getWorkingDir()
     )
@@ -1463,26 +1453,7 @@ pub fn library_script(
     changeWorkingDir(dir)
     seex_library_build = t
     done = 0
-    made = 0
     failed = nil
-    design = strcat(dir \"/seex_padstacks.dra\")
-    foreach( name pads
-      when( isFile(design)
-        deleteFile(design)
-      )
-      script = strcat(dir \"/padstacks/\" name \".il\")
-      status = cond(
-        ( !isFile(script) \"script missing\" )
-        ( !car(errset(axlOpenDesign(?design design ?mode \"wf\") t)) \"could not open a scratch drawing\" )
-        ( !car(errset(load(script) t)) \"script failed\" )
-        ( t seex_padstack_done(name) )
-      )
-      if( status == \"OK\" then
-        made = made + 1
-      else
-        failed = cons(sprintf(nil \"padstack %s (%s)\" name status) failed)
-      )
-    )
     foreach( name names
       design = strcat(dir \"/\" name \".dra\")
       when( isFile(design)
@@ -1502,9 +1473,6 @@ pub fn library_script(
     )
     seex_library_build = nil
     changeWorkingDir(home)
-    when( pads
-      printf(\"SeEx: built %d of %d padstacks in %s\\n\" made length(pads) dir)
-    )
     printf(\"SeEx: built %d of %d footprints in %s\\n\" done length(names) dir)
     foreach( entry reverse(failed)
       printf(\"SeEx: FAILED %s\\n\" entry)
@@ -1516,14 +1484,13 @@ pub fn library_script(
     );
     let _ = writeln!(
         script,
-        "seex_build_library(\"{dir}\" list({}) list({}))",
-        quoted(footprints),
-        quoted(padstacks)
+        "seex_build_library(\"{dir}\" list({}))",
+        names.join(" ")
     );
     script
 }
 
 /// Text for a SKILL string literal.
-pub(crate) fn skill_string(text: &str) -> String {
+fn skill_string(text: &str) -> String {
     text.replace('\\', "\\\\").replace('"', "\\\"")
 }
