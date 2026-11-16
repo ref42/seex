@@ -228,7 +228,7 @@ The entries are in no particular order; they follow the development timeline.
   - Helped me test multi-platform compatibility from the very start of the project until now; thank you very much!
 - 🐏🐏@[Cloud-Lightning](https://github.com/Cloud-Lightning)
   - Has used `seex` in several projects and gave me a great deal of practical advice; thank you very much!
-- c大佬@[lins-code54](https://github.com/lins-code54)
+- c大佬@[linHx54](https://github.com/linHx54)
   - Provided the `Cadence` export support, and the `3D` model rebuild feature so that models no longer carry the cloud-pattern or text `Logo`; thank you very much!
 - Everyone in WeChat groups `1` and `2`
   - They did not mind me posting `seex` and `npnp` updates in those groups; on the contrary, they were very supportive. Thank you very much!

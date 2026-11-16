@@ -228,7 +228,7 @@ cargo build --release
   - 帮忙测试了多平台兼容性，从项目伊始直至现在都一直在帮我测试，非常感谢！
 - `🐏🐏`@[Cloud-Lightning](https://github.com/Cloud-Lightning)
   - 曾在多个项目里使用 `seex`，并且给了我非常多的实用建议，非常感谢！
-- `c大佬`@[lins-code54](https://github.com/lins-code54)
+- `c大佬`@[linHx54](https://github.com/linHx54)
   - 为软件提供了导出 `Cadence` 的支持；同时还提供了 `3D` 模型的重建功能，`3D` 模型不再附带云纹或者文字 `Logo`；非常感谢！
 - 微信 `1` 群和 `2` 群的所有群友
   - 并没有反感我在该群里发布 `seex` 和 `npnp` 的更新事宜，相反却十分捧场，非常感谢！
